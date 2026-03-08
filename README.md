@@ -1,1 +1,3 @@
-# Simmypeet.github.io
+---
+layout: home
+---
