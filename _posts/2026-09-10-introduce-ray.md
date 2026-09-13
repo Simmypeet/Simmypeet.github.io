@@ -28,7 +28,7 @@ see whether if we can have a programming language that:
 In this post, I'll summarize my experiences in building Ray compiler and discuss
 interesting ideas that I implemented in Ray.
 
-## The Effect System and Effect Handlers
+# The Effect System and Effect Handlers
 
 The user can declare effects in Ray using `eff` keyword like this:
 
@@ -51,39 +51,8 @@ def sumTwice(x: int32, y: int32) -> int32 \ {Calculator}:
 The function `sumTwice` signature almost looks like a normal function signature,
 except that it has an additional effect annotation `\ {Calculator}`. This 
 signifies that the function `sumTwice` **may perform** the effect `Calculator`.
-In some sense, we could view this as **supplying implementations of the effect operations** to the function `sumTwice`.
-
-If we use the effect `Calculator` in the `sumTwice` function and don't 
-annotate the `\ {Calculator}` effect.
-
-```ray
-def sumTwice(x: int32, y: int32) -> int32:
-    let a = Calculator.add(x, y)
-    let b = Calculator.add(x, y)
-    return a + b
-```
-
-We'd get a compile-time error like this (look at this beautiful error message!):
-
-```
-[error]: function body effects do not match its signature: expected `{}`, but found `{Calculator | {any}}`
-  ╭▸ test.ray:5:5
-  │
-5 │ def sumTwice(x: int32, y: int32) -> int32:
-  │     ━━━━━━━━ the function body has effects outside its signature
-6 │     let a = Calculator.add(x, y)
-  ╰╴            ──────────────────── effect `{Calculator}` introduced here
-
-[error]: Compilation aborted due to 1 error(s)
-```
-
-The above error message means that the function signature of `sumTwice` says
-that it has no effects, which is represented by having `{}` in the effect 
-annotation. But in fact, the function body of `sumTwice` does use the 
-`Calculator` effect, which contradicts to what the function signature says. 
-
-So, the **effect system** of Ray is able to track the effects of each expression 
-in the function body, and check whether they match the function signature. 
+That annotation is important because it allows the type-checker to track the effects of functions and ensure that all of the effects that a function may
+perform are visible to the caller.
 
 Here, we'll show an another more complex example of using effects in Ray. Let's
 say we declares an additional effect called `Logger` like this:
@@ -96,3 +65,66 @@ eff Calculator:
 eff Logger:
   def log(x: int32)
 ```
+
+Here, we'll define a function `printSumTwice` that uses the earlier defined `sumTwice` function and prints the result through the `Logger` effect:
+
+```ray
+def printSumTwice(x: int32, y: int32) \ {Calculator, Logger}:
+  let result = sumTwice(x, y)
+  Logger.log(result)
+```
+
+Notice that the function `printSumTwice` now includes both `Calculator` and 
+`Logger` in its effect annotation. This makes sense because calling `sumTwice`
+performs the `Calculator` effect as its `\ {Calculator}` signature indicates 
+and calling `Logger.log` performs the `Logger` effect. Together, the function 
+`printSumTwice` may perform both effects, and the type-checker ensures that this 
+is properly tracked.
+
+"What if I forget to include an effect in the annotation?" Need not worry! The
+type-checker will catch that mistake and report an error. For example, if we
+forget to include `Calculator` in the function signature of `printSumTwice`, the type-checker will raise an error like this:
+
+```
+[error]: function body effects do not match its signature: expected `{Logger}`, but found `{Calculator, Logger | {any}}`
+   ╭▸ test.ray:15:5
+   │
+15 │ def printSumTwice(x: int32, y: int32) \ {Logger}:
+   │     ━━━━━━━━━━━━━ the function body has effects outside its signature
+16 │     let result = sumTwice(x, y)
+   │                  ────────────── effect `{Calculator}` introduced here
+17 │     Logger.log(result)
+   ╰╴    ────────────────── effect `{Logger}` introduced here
+
+[error]: Compilation aborted due to 1 error(s)
+```
+
+So far, we have shown how the language tracks and verifies the effects of 
+functions. But how do we **provide** an actual implementation for the effects?
+
+Here, user can provide an **effect handler** for the effect like this:
+
+```ray
+def sumTwiceWithHandler(x: int32, y: int32) -> int32:
+  run:
+    return sumTwice(x, y)
+  
+  with Calculator:
+    def add(x, y):
+      return x + y
+```
+
+The function `sumTwiceWithHandler` provides an implementation for the 
+`Calculator` effect. The `run ... with ...` block is a special construct that
+allows user to provide an implementation for the effect. The `run` block 
+contains the code that may perform the effect, and the `with` block contains
+the implementation of the effect. The above example defines an implementation 
+for the `Calculator.add` operation that simply adds two integers together.
+
+However, you might notice that the function `sumTwiceWithHandler`'s signature no
+longer specifies the `Calculator` effect.  This is not a mistake! The effect 
+handler implementation **handles** the `Calculator` effect, it subtracts the `Calculator` effect from the `sumTwice(x, y)` call expression, leaving the 
+expression having no effects. 
+
+Essentially, the effect system and effect handlers work together to provide a
+guarantee that **all effects are eventually handled**!
