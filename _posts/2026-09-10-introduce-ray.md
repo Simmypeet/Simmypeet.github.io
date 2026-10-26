@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "My Journey in Building Programming Language: Ray"
+title: "Implementing Effect Handlers in Ray Programming Language"
 date: 2026-03-08 10:00:00 +0000
 categories: update
 ---
@@ -27,21 +27,31 @@ I'd like to highlight the Effect System and Effect Handler features of Ray!
 
 ## Ray's Effect Handlers and Compilation Model
 
-Effect handlers are a powerful abstraction that allows you to define and manage
-complex control flow in your programs. For instance, you can use effect handlers
-to implement features like exceptions, async/await, generators, and more. 
+Effect handlers are a powerful abstraction that allows us to define and manage
+complex control flow in the programs. For instance, effect handlers can be
+used to implement features like exceptions, async/await, generators, and more. 
 
-We'll show a simple example of how we can use effect handlers to implement a 
-simple generator in Ray.
+Often, these features like async/await, exceptions, and generators are 
+implemented as a separate language feature with its own dedicated syntax. 
+However, the effect handler ought to be a more general and unified abstraction
+that can be used to implement them.
+
+Let's explore the effect handler feature of Ray through an example of 
+implementing a generator function that generates fibonacci numbers.
+
+Here's how an *effect* can be defined in Ray:
 
 ```ray
-effect Yield[a]:
+eff Yield[a]:
     def yield(value: a)
 ```
 
-Here, we define an effect called `Yield` that allows us to yield values of type
-`a`. Next, we can define a generator function that infinitely generates 
-fibonacci numbers:
+The `Yield` is defined as an **effect** that has a single **operation** called 
+`yield`. This looks similar to defining a trait or an interface in other 
+programming languages!.
+
+Let's define a function that uses the `Yield` effect to generate fibonacci 
+numbers as follows:
 
 ```ray
 pub def generateFibonacci() -> () \ {Yield[int32]}:
@@ -54,10 +64,18 @@ pub def generateFibonacci() -> () \ {Yield[int32]}:
         b = temp + b
 ```
 
-This looks like a normal function, there's no special syntax for generators, 
-it's simply defined as a function that has an effect `Yield[int32]`. In the 
-function body, it calls the `Yield.yield(a)` to yield the fibonacci number `a` 
-to the caller and its control flow is suspended until the caller resumes it. 
+The function signature `generateFibonacci() -> () \ {Yield[int32]}` has an
+additional syntax `\ {Yield[int32]}` that indicates that this function can 
+perform the `Yield[int32]` effect. Inside the function body, it's defined as
+an infinite loop that repeatedly performs the `Yield.yield(a)` operation to
+yield the next fibonacci number.
+
+The syntax `\ {Yield[int32]}` is a part of the **effect system** of Ray, which
+tracks which effects a function can perform. This can be thought of as an 
+extension of the type system that tracks side effects in addition to types.
+That annotation is required because the `Yield.yield(a)` operation performed
+inside the function body emits the `Yield[int32]` effect, and the function
+signature must reflect that. 
 
 To give a complete example, we can define a function that print the first 10
 fibonacci numbers:
@@ -76,43 +94,122 @@ pub def main():
                 break
 ```
 
-Firstly, the expression `coro generateFibonacci()` reifies the function into a
-coroutine, which is the mechanism behind compiling delimited continuations. If
-you're familiar with Rust's async/await, Ray uses exactly the same stackless
-coroutine mechanism to implement control flow suspension.
+First, the expression `coro generateFibonacci()` reifies the function into a
+**coroutine**. This expression doesn't immediately run the `generateFibonacci`
+function, but instead returns a coroutine that can be resumed later. 
 
-Inside the while loop, we drive the generator forward by calling `gen()`. 
-Here, the `handle` expression will intercept any effect that is raised by 
-resuming or running the generator. There're two branches in the `handle` 
-expression. The first branch is for handling the `Yield.yield` effect, which
-is ran every time the generator performs a `Yield.yield` call. The second branch
-`case return: ...` is ran when the generator function finishes and returns 
-normally.
+> The oversimplified explanation of a coroutine is to think of it as a function 
+that can be paused and gives the value back to the caller. Then, the caller
+can resume the coroutine again from where it left off. A single coroutine can
+pause and be resumed multiple times, which is different from a normal function 
+that can only be called once, run to completion, and return a value back to the 
+caller.
 
-Inside the `case Yield.yield(value) resume k:` branch, it prints the yielded
-value via `printf` statement and saves the continuation `k`, which represents
-the rest of the generator function after the `Yield.yield` call, via `gen = k`
-for the next iteration. 
+From now on, we will call `gen` a "coroutine" that represents the 
+`generateFibonacci` function.
 
-On the other hand, the `case return: ...` branch simply exits the loop when the 
-generator function finishes, since the generator function is an infinite loop, 
-this branch will never be executed in this example.
+Inside the while loop, the expression `handle gen(): ...` resumes the coroutine
+and handles the effects that are performed by the coroutine immediately after. 
+In this case, the `gen`, which represent the `generateFibonacci` function, 
+will run until it performs the  `Yield.yield(a)` operation then pause and return 
+the yielded value back to the `main` function. 
+
+Once the coroutine pauses, the `handle` expression will match the performed 
+effect operation and execute the corresponding branch of the `case` statement; 
+this is similar to how a `match` expression works in Rust.
+
+```ray
+pub def main():
+    # ...
+    while i < 10:
+        handle gen():
+            case Yield.yield(value) resume k:
+                printf("%d\n", value)
+                i += 1
+                gen = k
+            case return x:
+                break
+```
+
+Let's take a closer look at `case Yield.yield ...` branch:
+
+```ray
+case Yield.yield(value) resume k:
+    printf("%d\n", value)
+    i += 1
+    gen = k
+```
+
+As this branch suggests, it will match the `Yield.yield` operation and bind the
+yielded value to `value` variable of type `int32`; this is very similar to
+matching a variant of an enum. 
+
+The `resume k` part is unusual, it represents the **continuation** of the 
+coroutine `gen` that can be resumed later. In this case, it is a point after
+the `Yield.yield(a)` operation in the `generateFibonacci` function. 
+
+`k` is a first-class value that can be passed around, assigned to a variable,
+and called like a function, just like the `gen` coroutine.
+
+In this example, we assign `k` to `gen` variable so that we can resume the 
+coroutine in the next iteration of the while loop.
+
+On the other hand, the `case return: ...` branch:
+
+```ray
+case return x:
+    break
+```
+
+This branch is invoked when the coroutine finishes (returns normally). 
+The `return x` pattern binds the return value of the coroutine to `x` variable. 
+In this example, `x` is simply a unit value `()` and the branch breaks out of 
+the while loop since it doesn't have any more number to yield.
 
 In summary, the above example will print out first 10 fibonacci numbers. It
-works by repeatedly calling the generator function and handling the `Yield`
-effect at each iteration. The `k` continuation allows us to resume the generator
-function from where it left off, enabling us to generate the next fibonacci
-number.
+works by repeatedly resuming the coroutine and handling the `Yield.yield`
+operation at each iteration. The `k` continuation allows us to resume the 
+coroutine function from where it left off, enabling us to generate the next 
+fibonacci number.
+
+## What Can It be Used For?
+
+So far, the above example shows how to implement a generator function using
+effect handlers. However, it can also be used to implement various features
+that require control flow suspension. 
+
+Features like `async/await` can be implemented narturally using effect handlers.
+
+
+Implementing execeptions can be done by defining an `Exception` effect with an 
+operation like `raise(str: String) -> Never`. The `Never` type indicates a type 
+that can never have a value. This means that once the `raise`
+operation is performed, the rest of the function can never be resumed, and the 
+control flow will be transferred to the nearest enclosing `handle` expression.
+
 
 ### Effectful Code Compilation Model
 
-We briefly mentioned that Ray uses a stackless coroutine to implement control 
-flow suspension. This is a key part of how Ray compiles effectful code with 
-minimal memory overhead. We'll briefly illustrate how Ray lowers effectful code
-into a stackless coroutine.
+We briefly mentioned that Ray uses a coroutine to implement control flow 
+suspension, specifically stackless coroutines. This is a key part of how Ray 
+compiles effectful code with minimal memory overhead. 
 
-We used Rust's async/await and Coroutine as a reference for lowering effectful
-code. In Rust, its `Coroutine` trait looks something like this:
+Stackless coroutine is not a new concept, it has been used by Rust and C# to 
+implement async/await feature. The term "stackless" in this 
+context means that the coroutine doesn't require a separate OS-level stack or
+have to manipulate the stack pointer. Instead, the coroutine is implemented as
+an ordinary state machine, think of plain old `enum` in Rust.
+
+> Generally, stackless coroutine is memory efficient and is portable across
+different platforms. However, it does have some limitations, which we will
+discuss later in this post.
+
+So, let's explore how the compilation work through the lens of existing building
+blocks used to implement stackless coroutine in Rust, which is what Ray's 
+compilation model is based on.
+
+First, let's look at Coroutine's interface. Rust's Coroutine trait should give 
+us a good picture of how the coroutine state machine is defined:
 
 ```rust
 pub enum CoroutineState<Y, R> {
@@ -120,21 +217,22 @@ pub enum CoroutineState<Y, R> {
     Complete(R),
 }
 
-// This is the simplified version of Rust's Coroutine trait pub trait Coroutine<R> {
-    type Yield;
+// This is the simplified version of Rust's Coroutine trait
+pub trait Coroutine<R> { // R: The type of the argument that the coroutine expects to be resumed with
+    type Yield; 
     type Return;
 
     fn resume(self: Pin<&mut Self>, arg: R) -> CoroutineState<Self::Yield, Self::Return>;
 }
 ```
 
-Here, the `Coroutine`'s `R` type parameter is the argument type that is passed 
-to the coroutine each time it is resumed. The `Yield` associated type is the
-type of value that is yielded by the coroutine, and the `Return` associated type
-is the final return type of the coroutine when it completes. 
+Every coroutine state machine implements the `Coroutine` trait, which has a
+single method `resume`. It drives the coroutine state machine forward at a time
+and returns whether the coroutine has yielded a value or ran to completion via
+the `CoroutineState` enum.
 
-To give a concrete example, the `generateFibonacci` function can be lowered 
-into an enum that implements the `Coroutine` trait like this:
+We could imagine that the `generateFibonacci` function from the motivating
+example is lowered into an enum that implements the `Coroutine` trait like this:
 
 ```rust
 pub enum GenerateFibonacci {
@@ -163,9 +261,8 @@ impl Coroutine<()> for GenerateFibonacci {
 }
 ```
 
-To give a complete example, the  `main` function of the previous example can
-be lowered into a function that drives the `GenerateFibonacci` coroutine like 
-this:
+Then, the  `main` function of the previous example could be lowered into a 
+function that drives the `GenerateFibonacci` coroutine like this:
 
 ```rust
 pub fn main() {
@@ -183,7 +280,8 @@ pub fn main() {
 }
 ```
 
-This is roughly how Ray compiles the effectful code and the `handle` expression.
+Voila! This is roughly how Ray compiles the effectful code and the `handle` 
+expression.
 
 Another detail is that effect operations can take arguments and yield values of
 different types.
@@ -235,17 +333,22 @@ impl Coroutine<YieldAndCalculator_R> for YieldAndCalculator {
 ```
 
 Obviously, the `YieldAndCalculator_Yield` and `YieldAndCalculator_R` have
-to match! If the coroutine yields a 
-`YieldAndCalculator_Yield::Calculator_add(x, y)` value, the caller must resume
-with a `YieldAndCalculator_R::Calculator_add(result)` value. Fortunately, the
-Ray compiler will enforce this type safety and ensure that the types match up
-correctly. 
+to match! 
+
+If the coroutine yields a `YieldAndCalculator_Yield::Calculator_add(x, y)` 
+value, which asks for the result of adding two numbers, the caller must resume 
+with  `YieldAndCalculator_R::Calculator_add(result)` value answering it. 
+
+For this reason, the Ray compiler will enforce this type safety and ensure that 
+the types match up correctly. 
 
 ### Continuation Type-State Wrapper
 
 In Ray, when creating a coroutine via `coro function()` expression, the 
-compiler will generate a unique coroutine type for that function. However,
-the expression will return a value of type 
+compiler will generate a unique coroutine type for that function; this is 
+similar to how Rust generates a unique type for each closure.
+
+However, the expression will return a value of type 
 `Continuation[r, &mut <internal coroutine type>]` instead, which acts as a 
 type-state wrapper around the internal coroutine type. 
 
@@ -284,7 +387,7 @@ pub def main();
         case Yield.yield(value)   resume x:   ...
         case Calculator.add(x, y) resume y: ...
         case Calculator.sub(x, y) resume z: ...
-        case return x:
+        case return w:
             break
 ```
 
@@ -298,13 +401,114 @@ binding in each branch of the `handle` expression:
   `Continuation[(), &mut <coroutine type of yieldAndCalculator>]` as well, since
   the `Yield.yield` effect's resumption type is `()`. Also, notice that, the
   `&mut <coroutine type of yieldAndCalculator>` is the same as the `con` 
-  variable.
+  variable, which means that assigning `x` to `con` type checks correctly.
 - `y` in the `case Calculator.add ...` branch has the type of 
   `Continuation[int32, &mut <coroutine type of yieldAndCalculator>]`, since
   the `Calculator.add` effect's resumption type is `int32`. 
 - Similarly, `z` has the same type of `Continuation[int32, &mut <coroutine type of yieldAndCalculator>]` as `y`.
 
-### Rough Edge in Stackless Coroutine Implementation
+### Recursive Functions and Heap Allocation
 
-It's a known limitation that when having recursive calls in a stackless 
-coroutine, 
+Stackless coroutine serves as a good starting point for implementing effect
+handlers, but it has some rough edges that need to be addressed. This limitation
+is also present in Rust's async/await implementation. 
+
+The noticable limitation is that the stackless coroutine doesn't interact well
+with recursive functions. This is generally because how the coroutine state
+machine is composed. For instance, consider the following example:
+
+```ray
+pub def recursiveYield(n: int32) -> () \ {Yield[int32]}:
+    if n <= 0:
+        return
+    
+    recursiveYield(n - 1)
+    Yield.yield(n)
+```
+
+The `recursiveYield` function recursively calls itself and its state machine
+might be defined like this:
+
+```rust
+pub enum RecursiveYield {
+    Start { n: i32 },
+    RecursiveYield { n: i32, inner_state: Pin<Box<RecursiveYield>> },
+    End,
+}
+
+impl Coroutine<()> for RecursiveYield {
+    type Yield = i32;
+    type Return = ();
+
+    fn resume(mut self: Pin<&mut Self>, arg: ()) -> CoroutineState<Self::Yield, Self::Return> {
+        match self.as_mut().get_mut() {
+            RecursiveYield::Start { n } => {
+                if *n <= 0 {
+                    return CoroutineState::Complete(());
+                }
+
+                *self.as_mut().get_mut() = RecursiveYield::RecursiveYield {
+                    n: *n,
+                    inner_state: Box::pin(RecursiveYield::Start { n: *n - 1 }),
+                };
+
+                self.as_mut().resume(arg)
+            }
+
+            RecursiveYield::RecursiveYield { n, inner_state } => {
+                match inner_state.as_mut().resume(arg) {
+                    CoroutineState::Yielded(value) => {
+                        return CoroutineState::Yielded(value);
+                    }
+                    CoroutineState::Complete(()) => {
+                        let val = *n;
+                        *self.as_mut().get_mut() = RecursiveYield::End;
+                        return CoroutineState::Yielded(val);
+                    }
+                }
+            }
+
+            RecursiveYield::End => {
+                panic!("Cannot resume a completed coroutine");
+            }
+        }
+    }
+}
+```
+
+The compiler will generate a `RecursiveYield` state machine and the 
+`inner_state` field must be boxed into a heap-allocated structure. Otherwise,
+the `RecursiveYield` state machine will have an infinite size.
+
+In Rust, the user must manually and explicitly box the recursive state machine
+via `Box::pin`. However, in Ray, the compiler will automatically box the 
+recursive state machine for you. 
+
+This is a debatable design choice about explicitness vs ergonomics. Sometimes,
+silently allocating memory everytime a recursive function is called might be
+surprising and can lead to unpredictable performance issues. In the future, 
+we might have a dedicated syntax for explicitly boxing the recursive state
+machine. However, at the same time, we might be able to take advantage of the 
+fact that the compiler can choose to optimize the allocation and deallocation 
+of the recursive state machine.
+
+### Pinning the Coroutine State Machine
+
+Another important detail is that the coroutine state machine might contain
+a reference to its own saved state. This is generally unavoidable, especially
+in the context of system-level programming languages. One solution is to 
+**pin** the state machine in memory, which prevents it from invalidating its
+own internal references.
+
+Rust does this via combination of `Pin` pointer and `Unpin` trait. However,
+the pinning mechanism of Ray is not yet decided. Currently, every `coro` 
+expression pins the coroutine state machine immediately and the concrete 
+coroutine is hidden away, similarly to how Rust `std::pin::pin!` macro works. 
+This is also the reason why the `Continuation` wraps over the 
+`&mut <internal coroutine type>` instead of `<internal coroutine type>`. 
+
+Consequently, the user cannot move the coroutine state machine around in memory 
+before the first resumption, which is a limitation of the current design that
+we'll address in the future once we have a better pinning mechanism in place.
+
+## Type and Effect System
