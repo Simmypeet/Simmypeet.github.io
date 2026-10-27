@@ -5,10 +5,6 @@ date: 2026-03-08 10:00:00 +0000
 categories: update
 ---
 
-Hello everyone! In this post, I'd like to share my experience in building and
-studying about programming languages and how I built a programming language 
-called Ray!
-
 # Ray Programming Language
 
 My goal for Ray is to build a programming language that has the following 
@@ -23,7 +19,7 @@ combination of features:
 - Has an explicit-dictionary passing or OCaml's module system-like for ad-hoc
   polymorphism.
 
-I'd like to highlight the Effect System and Effect Handler features of Ray!
+In this post, it will be a write-up of the effect handler feature of Ray.
 
 ## Ray's Effect Handlers and Compilation Model
 
@@ -177,9 +173,6 @@ fibonacci number.
 So far, the above example shows how to implement a generator function using
 effect handlers. However, it can also be used to implement various features
 that require control flow suspension. 
-
-Features like `async/await` can be implemented narturally using effect handlers.
-
 
 Implementing execeptions can be done by defining an `Exception` effect with an 
 operation like `raise(str: String) -> Never`. The `Never` type indicates a type 
@@ -512,3 +505,166 @@ before the first resumption, which is a limitation of the current design that
 we'll address in the future once we have a better pinning mechanism in place.
 
 ## Type and Effect System
+
+So far, we have discussed about the semantics and compilation model of effect
+handlers. In a language with a static type system, it's natural to extend the
+type system to track side effects as well. This is where the **effect system**
+comes into play.
+
+Generally, the effect system tracks which set of effects a function can perform 
+and ensures that all effects are handled properly. However, it's also about how 
+they are composed and interact with each other. Let's explore the effect system
+through the notorious **function coloring problem**.
+
+### Function Coloring Problem
+
+The "color" of a function is a metaphor describing that a function can have 
+some certain attributes or properties that may make them incomposable with
+other functions. Those colors of functions could be "async vs sync", 
+"throw vs non-throw", etc.
+
+For instance, when calling an async function, the caller must also be an async
+function. When calling a function that may throw an exception, consequently,
+the caller must also be a function that may throw an exception. The problem
+becomes prominent when trying to compose functions with different colors,
+especially when dealing with higher-order functions.
+
+Let's take an example of function coloring problem that everyone might be able to 
+relate to. In Rust, consider a very primitive `Option::map` function:
+
+```rust
+pub enum Option<T> {
+    Some(T),
+    None,
+}
+
+impl<T> Option<T> {
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Option<U> {
+        match self {
+            Option::Some(value) => Option::Some(f(value)),
+            Option::None => Option::None,
+        }
+    }
+}
+
+pub fn main() {
+    assert_eq!(Some(2).map(|x| x + 1),      Some(3));
+    assert_eq!(None.map(|x: i32| x + 1),    None);
+    assert_eq!(Some(2).map(|x| x % 2 == 0), Some(true));
+}
+```
+
+So far so good, the problem arises when we try to use the `Option::map` function
+with an async closure.
+
+```rust
+Some(32).map(async |x| do_some_io(x).await) // ERROR!
+```
+
+The original `Option::map` function expects a "synchronous" closure, not an
+"asynchronous" closure. They have different colors, and thus, they are 
+incomposable. The simplest solution is to define a new variant of `Option::map`
+that accepts an async closure, which we can call `Option::map_async`:
+
+```rust
+impl<T> Option<T> {
+    pub async fn map_async<U>(self, f: impl AsyncFnOnce(T) -> U) -> Option<U> {
+        match self {
+            Option::Some(value) => Option::Some(f(value).await),
+            Option::None => Option::None,
+        }
+    }
+}
+```
+
+A more general and better solution is to define a single `Option::map` function
+that can be **polymorphic** over the color of the closure. This is where the
+effect system comes into play. For instance, the `Option::map` function can be 
+defined as follows:
+
+```rust
+impl<T> Option<T> {
+    pub fn map<U, !E>(self, f: impl FnOnce(T) -> U \ !E) -> Option<U> \ !E {
+        match self {
+            Option::Some(value) => Option::Some(f(value)),
+            Option::None => Option::None,
+        }
+    }
+}
+```
+
+A new polymorphic variable `E` is introduced to represent the **color** or
+**effect** of the closure. `E` can describe "asyncness", "throwness", or 
+"failability", etc. With this definition, the `Option::map` function's color is 
+now  dependent on the color of the closure. For instance, if the closure is 
+`async`, then the `Option::map` function is also `async`.
+
+In Rust, there's also an ongoing discussion about this problem and there's a
+new proposal called [Keyword Generics](https://blog.rust-lang.org/inside-rust/2022/07/27/keyword-generics/), which in high-level, has a similar goal and approach to
+the effect system.
+
+Some other languages choose to combat the function coloring problem in a
+different way. For instance, Go chooses to ignore the problem by simply not 
+having any distinction between async and sync functions; all functions in Go
+are simpy `func`, no distinction between async and sync.
+
+### Effect System and Effect Polymorphism
+
+Previously, we have shown a motivating example of how the effect system can be 
+used not only to track side effects but also to solve the function coloring 
+problem. In effect systems, the type is often extended with an additional *kind* 
+of type that represents the **set of effets**; this is similar to how Rust's 
+type system is extended with new **lifetime** kind to support the borrow 
+checker or **constant value** kind to support compile-time constant evaluation.
+
+As the time of writing this post, I've studied two different implementations of
+effect systems: **Koka** and **Flix**. Both languages have very similar effect 
+handler semantics (if I remember correctly), but they have different approaches 
+to the effect system.
+
+In Koka, the effect system is based on row polymorphism, which is also a system
+that's used to implement polymorphic extensible records. Surprisingly, it's
+a very natural fit for implementing effect systems.
+
+On the other hand, Flix uses set formulae and boolean unification to implement
+the effect system. For instance, you could express the effect of a function as a
+set of effects and use set operations like union, intersection, and difference
+to compose the effect terms. This gives a very expressive system that can
+track complex effect relationships precisely.
+
+Let's see how both languages represent the effect in their systems. 
+
+> Disclaimer: The following effect syntax is a very simplified version of the
+acutal syntax used in Koka and Flix.
+
+Here's the brief effect syntax of Koka:
+
+```
+Effect ::= EffectSymbol[Ty*]  // For example, `IO`, `State[int]`, `Yield[int]`, etc.
+
+EffectRow ::= 
+   | Var
+   | {}                       // Empty effect
+   | {Effect | EffectRow}     // Effect Extension
+```
+
+In the above very simplified syntax, the `Effect` is structured as a linked
+list of `Label`s, which is a row polymorphic representation. Whereas, `Var` is 
+a polymorphic effect variable or inference variable.
+
+On the other hand, here's the brief effect syntax of Flix:
+
+```
+Effect ::= EffectSymbol      // For example, `IO`, `State`, `Yield`, etc.
+
+Op ::= ...                   // Set operations like union, intersection, xor, etc.
+
+EffectRow ::=
+    | Var
+    | {}                     // Empty effect
+    | Universal              // Universal effect
+    | EffectRow Op EffectRow // Composing effects with set operations
+```
+
+In Flix, the `Effect` is composed in a set formulae representation, looking
+like a tree structure. 
