@@ -396,7 +396,7 @@ hood.
 ### Effectful Code Compilation Model
 
 We briefly mentioned that Ray uses a coroutine to implement first-class 
-continuations and control flow suspension, specifically stackless coroutines. 
+continuations and control flow suspension, specifically **stackless coroutines**. 
 This is a key part of how Ray lowers effect handlers and continuations 
 efficiently with relatively low memory overhead.
 
@@ -475,22 +475,21 @@ impl Coroutine<()> for GenerateFibonacci {
 }
 ```
 
-Once we see that the `generateFibonacci` function is simply lowered into a state
-machine and the `resume` method that drives the state machine forward, we can
-compare it with our initial divide-by-zero exception example. 
+Once we see that the `generateFibonacci` function is simply lowered into a pair 
+of state machine and `resume` method that drives the state machine forward, 
+we can compare it with our initial divide-by-zero exception example. 
 
 - The `GenerateFibonacci` state machine is essentially the 
 **snapshot**, each variant of the `GenerateFibonacci` enum represents where
 the computation is paused and what the values of the local variables are at 
 that point. 
-- Calling the continuation `k` is simply calling the 
+- Resuming the continuation `k` is simply calling the 
 `GenerateFibonacci::resume`, executing the rest of the computation according
 to the current variant of the `GenerateFibonacci` state machine.
 - `raise DivideByZeroException.throw(dividend)` is analogous to calling the
 `GenerateFibonacci::resume` method and returning the `CoroutineState::Yielded` 
 variant, which suspends the computation and returns the yielded value back to 
 the caller.
-
 
 Then, the  `main` function of the previous example could be lowered into a 
 function that drives the `GenerateFibonacci` coroutine like this:
@@ -516,11 +515,10 @@ very similar or essentially the same to the `handle` expression in the original
 Ray's `main` function. 
 
 One minor question that comes to mind is "where's the `resume k` part of the 
-`handle` expression and `gen` variable from `coro` expression, what're their 
-equivalents in the lowered Rust code?".  The answer is that the original `gen` 
-variable and `k` continuation are simply pointer to the same `GenerateFibonacci` 
-state machine, which is represented by `gen_coro` variable in the lowered Rust 
-code.
+`handle` expression and `gen` variable from `coro` expression fits here, 
+what're their equivalents in the lowered Rust code?". The answer is that the 
+original `gen` variable and `k` continuation are simply pointer to the same `GenerateFibonacci`state machine, which is represented by `gen_coro` variable 
+in the lowered Rust code.
 
 So, the `resume k` continuation in the original Ray code isn't a separate 
 function or anything special, but simply a pointer to the `GenerateFibonacci`.
