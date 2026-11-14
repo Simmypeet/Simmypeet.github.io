@@ -887,7 +887,8 @@ combination of stackless coroutine + nice type system that tracks effects.
 Also, if you're interested in the project and want to play with it, the compiler
 and the source code of Ray is available on [GitHub](https://github.com/Simmypeet/ray).
 
-**AI Disclosure:** LLMs were used to assist in implementing the Ray compiler, 
-although everything was reviewed and verified by the author. But the write-up
-was written entirely by myself without any LLM assistance, as I want to solidify
-my understanding of the topic and to share my understanding with others.
+**LLM Disclosure:** The write-up was written entirely by myself without any LLM 
+assistance, as I want to solidify my understanding of the topic and to share my 
+understanding with others. However, the compiler project and source code of
+Ray is LLM-assisted. Nevertheless, the LLM-generated code is reviewed and 
+verified by myself to ensure correctness and quality.
