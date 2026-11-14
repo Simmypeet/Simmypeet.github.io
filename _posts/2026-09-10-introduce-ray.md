@@ -7,31 +7,31 @@ categories: update
 
 # Ray Programming Language
 
-Ray is a programming language that is designed to be a systems-level language 
-with static type system and memory safety (like Rust). 
+Ray is a hobby programming language that I’ve been building in my free time. 
+It’s a system-level programming language with a static type system and memory 
+safety (like Rust). 
 
-On top of that, Ray have effect handlers and effect system features that allows 
+On top of that, Ray has effect handlers and effect system features that allow 
 us to define and manage complex control flow in the programs. 
 
-One of its selling point that I find interesting is that they provide a
+One of its selling points that I find interesting is that they provide a
 unified abstraction for implementing features like exceptions, async/await,
 and generators. This means that with only effect handlers, we can implement 
 those features without having to implement them as a separate language feature 
 with its own dedicated syntax.
 
 So in this write-up, I will summarize my understanding of effect handlers and
-effect system. And also, how these features are implemented in Ray programming
-language.
+the effect system. I will also discuss how these features are implemented in the 
+Ray programming language.
 
 ## Oversimplified Explanation of Effect Handlers
 
 Effect handlers are a powerful abstraction that allows us to define and manage
-complex control flow in the programs. There are several programming languages
-that have implemented effect handlers. The one that I know are Koka, Flix, 
-Effekt, and Ante.
+complex control flow in programs. Several programming languages have implemented 
+effect handlers. The ones that I know are Koka, Flix, Effekt, and Ante.
 
 This will be a very informal and oversimplified explanation of effect handlers 
-for those who are not familiar with the concept.
+for those unfamiliar with the concept.
 
 The simplest way to understand effect handlers is to think of them as a feature
 that allows us to throw exceptions, catch them, and optionally resume the 
@@ -52,18 +52,18 @@ def divide(dividend: float, divisor: float) -> float:
         return dividend / divisor
 ```
 
-This above example resembles a typical exception handling mechanism in many 
-programming languages. Except that, `DivideByZeroException` is actually not
+The above example resembles a typical exception handling mechanism in many 
+programming languages. Except that `DivideByZeroException` is actually not
 an exception type, but an **effect** that has a single **operation** called
 `throw`. 
 
-Another observation is that, 
+Another observation is that
 `raise DivideByZeroException.throw(dividend)` looks like a normal function call
-that can be used as an expression that give back a value?
+that can be used as an expression that gives back a value?
 
 Normally, in a language like Python or Java, raising an exception is
 a statement that doesn't yield a value. Once the exception is raised, the
-function will be terminated and the control flow will be transferred to the 
+function will be terminated, and the control flow will be transferred to the 
 nearest enclosing exception handler. However, in our example, it suggests that
 the control flow may continue after the `raise` expression, which it can under
 the effect handler mechanism!
@@ -85,7 +85,7 @@ once the exception `DivideByZeroException.throw` is raised, the control flow
 will be transferred to the `except DivideByZeroException.throw(dividend)` 
 branch. 
 
-However, the unsual is in the `resume k` part of the `except` clause.
+However, the unsual part is in the `resume k` part of the `except` clause.
 The `resume k` binds the `k` variable to a **first-class continuation** that 
 can be called to resume the computation after the `raise` expression in the 
 `divide` function.
@@ -104,7 +104,7 @@ means that the variable `k` is:
 The term **continuation** may also sound abstract, but in this case, the `k` 
 variable is a function that represents a **snapshot** of the program's execution
 at the point where the `raise` expression was called. So the term **snapshot**
-means that the `k` variable remembers what are the values of all the local
+means that the `k` variable remembers what the values of all the local
 variables at the point where the `raise` expression was called and what is the
 next instruction or statement to be executed after the `raise` expression.
 
@@ -172,7 +172,7 @@ continuation `k`:
 
 So far, we have seen how effect handlers can be used to implement exceptions.
 In this section, we'll explore the actual semantics of the effect handler 
-feature of Ray and  how it is implemented under the hood through examples.
+feature of Ray and how it is implemented under the hood through examples.
 
 Let's explore the effect handler feature of Ray through an example of 
 implementing a generator function that generates fibonacci numbers.
@@ -203,14 +203,15 @@ pub def generateFibonacci() -> () \ {Yield[int32]}:
 ```
 
 The function signature `generateFibonacci() -> () \ {Yield[int32]}` has an
-additional syntax `\ {Yield[int32]}` that indicates that this function can 
+additional `\ {Yield[int32]}` syntax indicating that this function can 
 perform the `Yield[int32]` effect. Inside the function body, it's defined as
 an infinite loop that repeatedly performs the `Yield.yield(a)` operation to
 yield the next fibonacci number.
 
 The syntax `\ {Yield[int32]}` is a part of the **effect system** of Ray, which
 tracks which effects a function can perform. This can be thought of as an 
-extension of the type system that tracks effects in addition to types.
+extension to the type system that tracks effects in addition to types.
+
 That annotation is required because the `Yield.yield(a)` operation performed
 inside the function body emits the `Yield[int32]` effect, and the function
 signature must reflect that. 
@@ -241,7 +242,13 @@ that can be paused and gives the value back to the caller. Then, the caller
 can resume the coroutine again from where it left off. A single coroutine can
 pause and be resumed multiple times, which is different from a normal function 
 that can only be called once, run to completion, and return a value back to the 
-caller. Coroutine simply is a lowering strategy that Ray uses to implement 
+caller. 
+
+> This is where Ray's syntax and semantics of effect handlers diverge from the 
+original divide-by-zero exception example. In the divide-by-zero example, it
+used a `try-except` block syntax to handle the effect, but in this example, 
+it uses a combination of `coro` and `handle` expressions to handle the effect.
+Here, the Coroutine is a lowering strategy that Ray uses to implement 
 **first-class continuation `k`** that we discussed earlier. The details of how
 this works will be discussed in a later section.
 
