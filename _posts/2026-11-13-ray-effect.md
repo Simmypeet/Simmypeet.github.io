@@ -103,7 +103,7 @@ means that the variable `k` is:
 - a callback function that can be called like a normal function, which will
   go back to the point where the `raise` expression was called and resume the 
   computation from there. In some sense, `k` simply has a type of 
-  `(float) -> Unit` (a function that takes an `int32` argument and returns 
+  `(float) -> Unit` (a function that takes a `float` argument and returns 
   nothing).
 
 And the term **continuation** may also sound abstract, but in this case, the `k` 
@@ -288,9 +288,9 @@ of the state of the coroutine at each call to the coroutine:
 | - | - | - | - |
 | 1 | N/A | a=0, b=1 | Yield.yield(0) |
 | 2 | a=0, b=1 | a=1, b=1 | Yield.yield(1) |
-| 3 | a=1, b=1 | a=1, b=2 | Yield.yield(2) |
-| 4 | a=1, b=2 | a=2, b=3 | Yield.yield(3) |
-| 5 | a=2, b=3 | a=3, b=5 | Yield.yield(5) |
+| 3 | a=1, b=1 | a=1, b=2 | Yield.yield(1) |
+| 4 | a=1, b=2 | a=2, b=3 | Yield.yield(2) |
+| 5 | a=2, b=3 | a=3, b=5 | Yield.yield(3) |
 | ... | ... | ... | ... |
 
 Each time we call to the coroutine, it reads off the current state, executes the 
@@ -365,14 +365,15 @@ operation at each iteration. The `k` continuation allows us to resume the
 coroutine function from where it left off, enabling us to generate the next 
 fibonacci number. 
 
-### Difference Between Divide-by-Zero Exception Example and Fibonacci Generator Example
+### Ray's Continuations are One-Shot
 
 In some sense, the fibonacci generator coroutine example is similar to the
 divide-by-zero exception example we discussed earlier. Both examples involve
 suspending computation and resuming it later. 
 
 So, Ray's first-class continuation is implemented through the coroutine 
-mechanism, therefore, it losts the ability to **resume the computation multiple times**. This might find contradictory to the earlier explanation that coroutine
+mechanism, therefore, it losts the ability to **resume the computation multiple 
+times**. This might find contradictory to the earlier explanation that coroutine
 can be resumed multiple times. 
 
 However, the **multiple-resumption** in this context refers to the ability to 
@@ -388,6 +389,15 @@ always have a copy of the original state machine to resume from the same point
 multiple times. However, cloning the entire state machine of a coroutine can
 be non-trivial and its semantic can be tricky, especially in a language that
 has mutable variables and linear resources.
+
+We call this **one-shot continuation** because the continuation can only be 
+resumed **at most once**. This is also enforced by the type system of Ray, which
+ensures that in each step/state of the coroutine, the coroutine can only be 
+resumed once. 
+
+This reflects in the earlier example where the `k` (representing the next-state
+of the coroutine) continuation is assigned back to the `gen` variable so that
+it can be used in the next iteration of the while loop.
 
 In other implementation of effect handlers like Flix, Koka, and Effekt, they
 support multiple-resumption. But I'm not sure how they implement it under the 
@@ -486,10 +496,9 @@ that point.
 - Resuming the continuation `k` is simply calling the 
 `GenerateFibonacci::resume`, executing the rest of the computation according
 to the current variant of the `GenerateFibonacci` state machine.
-- `raise DivideByZeroException.throw(dividend)` is analogous to calling the
-`GenerateFibonacci::resume` method and returning the `CoroutineState::Yielded` 
-variant, which suspends the computation and returns the yielded value back to 
-the caller.
+- `raise DivideByZeroException.throw(dividend)` is analogous to returning 
+`CoroutineState::Yielded` variant, which suspends the computation and returns 
+the yielded value back to the caller.
 
 Then, the  `main` function of the previous example could be lowered into a 
 function that drives the `GenerateFibonacci` coroutine like this:
@@ -628,15 +637,14 @@ def yieldAndCalculator() -> () \ {Yield[int32], Calculator}:
     ...
 
 
-pub def main();
+pub def main():
     let mut con = coro yieldAndCalculator() 
 
     handle con():
-        case Yield.yield(value)   resume x:   ...
-        case Calculator.add(x, y) resume y: ...
-        case Calculator.sub(x, y) resume z: ...
-        case return w:
-            break
+        case Yield.yield(value)   resume k1: ...
+        case Calculator.add(x, y) resume k2: ...
+        case Calculator.sub(x, y) resume k3: ...
+        case return w:                       ...
 ```
 
 To illustrate how the `Continuation` type-state wrapper works, let's consider
@@ -645,15 +653,21 @@ binding in each branch of the `handle` expression:
 
 - `con` has the type of `Continuation[(), &mut <coroutine type of yieldAndCalculator>]`
   since starting the coroutine doesn't require any arguments.
-- `x` in the `case Yield.yield ...` branch has the type of 
+- `k1` in the `case Yield.yield ...` branch has the type of 
   `Continuation[(), &mut <coroutine type of yieldAndCalculator>]` as well, since
   the `Yield.yield` effect's resumption type is `()`. Also, notice that, the
   `&mut <coroutine type of yieldAndCalculator>` is the same as the `con` 
-  variable, which means that assigning `x` to `con` type checks correctly.
-- `y` in the `case Calculator.add ...` branch has the type of 
+  variable, which means that assigning `k1` to `con` type checks correctly.
+- `k2` in the `case Calculator.add ...` branch has the type of 
   `Continuation[int32, &mut <coroutine type of yieldAndCalculator>]`, since
   the `Calculator.add` effect's resumption type is `int32`. 
-- Similarly, `z` has the same type of `Continuation[int32, &mut <coroutine type of yieldAndCalculator>]` as `y`.
+- Similarly, `k3` has the same type of `Continuation[int32, &mut <coroutine type of yieldAndCalculator>]` as `k2`.
+
+So the additional `k1`, `k2`, and `k3` variables in each branch of the handle 
+still point to the same coroutine state machine as `con`, but each `k` variable 
+has a different resumption type depending on the effect that was handled. This 
+is primarily to prevent the user from resuming the coroutine with an incorrect 
+argument type.
 
 ### Recursive Functions and Heap Allocation
 
@@ -681,6 +695,7 @@ might be defined like this:
 pub enum RecursiveYield {
     Start { n: i32 },
     RecursiveYield { n: i32, inner_state: Pin<Box<RecursiveYield>> },
+    Yielded,
     End,
 }
 
@@ -710,10 +725,15 @@ impl Coroutine<()> for RecursiveYield {
                     }
                     CoroutineState::Complete(()) => {
                         let val = *n;
-                        *self.as_mut().get_mut() = RecursiveYield::End;
+                        *self.as_mut().get_mut() = RecursiveYield::Yielded;
                         return CoroutineState::Yielded(val);
                     }
                 }
+            }
+
+            RecursiveYield::Yielded => {
+                *self.as_mut().get_mut() = RecursiveYield::End;
+                CoroutineState::Complete(())
             }
 
             RecursiveYield::End => {
@@ -894,14 +914,25 @@ now dependent on the color of the closure. For instance, if the closure is
 `async`, then the `Option::map` function is also `async`.
 
 In Rust, there's also an ongoing discussion about this problem and there's a
-new proposal called [Keyword Generics](https://blog.rust-lang.org/inside-rust/2022/07/27/keyword-generics/), which in high-level, has a similar goal and approach to
-the effect system.
+new proposal called [Keyword Generics](https://blog.rust-lang.org/inside-rust/2022/07/27/keyword-generics/), 
+which in high-level, has a similar goal and approach to the effect system.
 
-Some other languages choose to combat the function coloring problem in a
-different way. For instance, Go chooses to ignore the problem by simply not 
-having any distinction between async and sync functions; all functions in Go
-are simpy `func`, no distinction between async and sync.
+In Ray, the effect polymorphism is described similarly like:
 
+```ray
+pub def optionMap(opt: Option[a], map: def(a) -> b \ e) -> Option[b] \ e:
+    match opt:
+        case Option.Some(value):
+            return Option.Some(map(value))
+        case Option.None:
+            return Option.None
+```
+
+Also, Ray uses monomorphization to generate a concrete version of the 
+`optionMap` function for each concrete effect type `e`. Therefore, if the 
+`optionMap` function is called with a closure that doesn't perform any effect
+(synchronous closure), the compiler will generate an instance of `optionMap`
+that doesn't yield. 
 
 # Conclusion
 
