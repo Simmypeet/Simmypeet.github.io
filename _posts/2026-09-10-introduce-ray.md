@@ -316,6 +316,47 @@ operation at each iteration. The `k` continuation allows us to resume the
 coroutine function from where it left off, enabling us to generate the next 
 fibonacci number.
 
+### Difference Between Divide-by-Zero Exception Example and Fibonacci Generator Example
+
+The divide-by-zero exception example would describe how most programming 
+languages implement the semantics of effect handlers, such as Flix. 
+
+However, the fibonacci generator example is how Ray implements the semantics of 
+effect handlers, which quite different from the divide-by-zero example.
+
+One minor difference is that the divide-by-zero example uses a `raise` keyword
+in front of the `DivideByZeroException.throw` operation, but the fibonacci 
+generator doesn't. This is simply a syntactic difference, and it was for the
+sake of differentiating the effect operation from a normal function call.
+
+However, the major difference is that in the main function, the divide-by-zero
+example executes the `try` block immediately, but in the fibonacci generator
+example, we have to explicitly reify the `generateFibonacci` function into a 
+coroutine using `coro` expression and then resume the coroutine using `handle` expression, so it takes an extra step to start the computation. 
+
+In some sense, this means that in the fibonacci generator example, we directly 
+receive the **first-class continuation** of the `generateFibonacci` function 
+upfront.
+
+The differences between the two examples might be confusing at first, but they
+have things in common:
+- Both can **suspend** the computation and **yield a value back** to the caller. 
+  For instance, `raise DivideByZeroException.throw(dividend)` in divide-by-zero
+  example and `Yield.yield(a)` in fibonacci generator example both suspend the 
+  computation
+- After suspending the computation and yielding a value back, both can 
+  intercept (catch) the effect operation and resume the computation from where 
+  it left off. 
+- Both receive a **first-class continuation** that can be called to resume the    
+  computation. In the divide-by-zero example, the continuation is received in the 
+  `resume k` part of the `except` clause, while in the fibonacci generator 
+  example, the continuation is received both in the `resume k` part of the `case` 
+  clause and in the `coro` expression.
+
+To understand how Ray's effect handlers work under the hood and compare it with 
+the divide-by-zero exception example, we need to explore the compilation model 
+of Ray's effect handlers.
+
 ### Effectful Code Compilation Model
 
 We briefly mentioned that Ray uses a coroutine to implement first-class 
@@ -333,15 +374,15 @@ an ordinary state machine, think of plain old `enum` in Rust.
 different platforms. However, it does have some limitations, which we will
 discuss later in this post.
 
-It turns out that Rust's async/await (which is also implemented as a stackless 
-coroutine) already gives us a good starting point for implementing effect 
-handlers and continuations in Ray.
+It turns out that the lowering strategy that Rust uses to implement stackless 
+coroutine (the mechanism behind the async/await feature of Rust) already gives 
+us a good starting point that we can borrow from to implement effect handlers 
+and continuations in Ray.
 
 So, let's explore how the compilation work through the lens of existing building
-blocks used to implement stackless coroutine in Rust, which is what Ray's 
-compilation model is based on. And for a moment, let's imagine that Ray 
-compiles the code into Rust, which is not the case, but it will help us 
-understand the compilation model of Ray.
+blocks used to implement stackless coroutine in Rust. We'll give examples of
+how our earlier `generateFibonacci` examples can be lowered into an efficient
+Rust code, primarily using `Coroutine` trait and `enum` state machine.
 
 First, let's look at Coroutine's interface. Rust's Coroutine trait should give 
 us a good picture of how the coroutine state machine is defined:
@@ -362,9 +403,9 @@ pub trait Coroutine<R> { // R: The type of the argument that the coroutine expec
 ```
 
 In Rust, every coroutine state machine implements the `Coroutine` trait, which 
-has a single method `resume`. It drives the coroutine state machine forward at a 
-time and returns whether the coroutine has yielded a value or ran to completion 
-via the `CoroutineState` enum.
+has a single method `resume`. The `resume` method drives the coroutine state 
+machine forward at a time and returns whether the coroutine has suspended and 
+yielded a value or ran to completion via the `CoroutineState` enum.
 
 So how does this tie into the effect handler feature of Ray? Let's imagine that
 we will lower the `generateFibonacci` function into an efficient Rust enum 
@@ -398,19 +439,32 @@ impl Coroutine<()> for GenerateFibonacci {
 }
 ```
 
-If stripped down to he bare minimum without `Pin` and `.get_mut()` details,
-`GenerateFibonacci` enum is simply a state machine and `resume` method 
-simply defines the transition between states. 
+Once we see that the `generateFibonacci` function is simply lowered into a state
+machine and the `resume` method that drives the state machine forward, we can
+compare it with our initial divide-by-zero exception example. 
+
+- The `GenerateFibonacci` state machine is essentially the 
+**snapshot**, each variant of the `GenerateFibonacci` enum represents where
+the computation is paused and what the values of the local variables are at 
+that point. 
+- Calling the continuation `k` is simply calling the 
+`GenerateFibonacci::resume`, executing the rest of the computation according
+to the current variant of the `GenerateFibonacci` state machine.
+- `raise DivideByZeroException.throw(dividend)` is analogous to calling the
+`GenerateFibonacci::resume` method and returning the `CoroutineState::Yielded` 
+variant, which suspends the computation and returns the yielded value back to 
+the caller.
+
 
 Then, the  `main` function of the previous example could be lowered into a 
 function that drives the `GenerateFibonacci` coroutine like this:
 
 ```rust
 pub fn main() {
-    let mut gen = std::pin::pin!(GenerateFibonacci::Start);
+    let mut gen_coro = std::pin::pin!(GenerateFibonacci::Start);
     let mut i = 0;
     while i < 10 {
-        match gen.as_mut().resume(()) {
+        match gen_coro.as_mut().resume(()) {
             CoroutineState::Yielded(value) => {
                 println!("{}", value);
                 i += 1;
@@ -421,10 +475,29 @@ pub fn main() {
 }
 ```
 
-Voila! That's it. This is roughly how Ray compiles the effectful code and the 
+You'll notice that the `match` expression in the lowered `main` function is
+very similar or essentially the same to the `handle` expression in the original
+Ray's `main` function. 
+
+One minor question that comes to mind is "where's the `resume k` part of the 
+`handle` expression and `gen` variable from `coro` expression, what're their 
+equivalents in the lowered Rust code?".  The answer is that the original `gen` 
+variable and `k` continuation are simply pointer to the same `GenerateFibonacci` 
+state machine, which is represented by `gen_coro` variable in the lowered Rust 
+code.
+
+So, the `resume k` continuation in the original Ray code isn't a separate 
+function or anything special, but simply a pointer to the `GenerateFibonacci`.
+An another follow-up question might be "why do we even bother having a separate
+`k` variable instead of just one `gen` variable? if both point to the same state machine, why not just use one?". The answer is will be discussed in the next 
+section about **Continuation Type-State Wrapper**.
+
+And voila! That's it. This is roughly how Ray compiles the effectful code and the 
 `handle` expression. The actual implementation in Ray, however, lowers the code
-into C using combinations of `struct` and `union` instead of Rust `enum`, but 
-the idea and lowering shape is very similar.
+into C source code via `struct` and `union` instead of Rust `enum`, but the idea 
+and lowering shape is very similar.
+
+### Continuation Type-State Wrapper
 
 Another detail is that effect operations can take arguments and yield values of
 different types.
@@ -484,8 +557,6 @@ with  `YieldAndCalculator_R::Calculator_add(result)` value answering it.
 
 For this reason, the Ray compiler will enforce this type safety and ensure that 
 the types match up correctly. 
-
-### Continuation Type-State Wrapper
 
 In Ray, when creating a coroutine via `coro function()` expression, the 
 compiler will generate a unique coroutine type for that function; this is 
@@ -693,9 +764,10 @@ pub def generateFibonacci() -> () \ {Yield[int32]}:
         b = temp + b
 ```
 
-However, it's also about how 
-they are composed and interact with each other. Let's explore the effect system
-through the notorious **function coloring problem**.
+However, effect system also covers more that just tracking which effects a 
+function can perform. It also covers the composibility and interoperability of 
+functions with different effects, which is known through the notorious 
+**function coloring problem**.
 
 ### Function Coloring Problem
 
@@ -705,10 +777,12 @@ other functions. Those colors of functions could be "async vs sync",
 "throw vs non-throw", etc.
 
 For instance, when calling an async function, the caller must also be an async
-function. When calling a function that may throw an exception, consequently,
-the caller must also be a function that may throw an exception. The problem
-becomes prominent when trying to compose functions with different colors,
-especially when dealing with higher-order functions.
+function, you cannot trivially call an async function from a synchronous 
+function. Similarly, when calling a function that may throw an exception, 
+consequently, the caller must also be a function that may throw an exception. 
+
+The problem becomes prominent when trying to compose functions with different 
+colors, especially when dealing with higher-order functions.
 
 Let's take an example of function coloring problem that everyone might be able to 
 relate to. In Rust, consider a very primitive `Option::map` function:
@@ -758,11 +832,15 @@ impl<T> Option<T> {
 }
 ```
 
-This solution works fine, at the cost of code duplication. A more general and 
-better solution is to define a single `Option::map` function that can be 
-**polymorphic** over the color of the closure. This is where the
-effect system comes into play. For instance, the `Option::map` function can be 
-defined as follows:
+The only difference is that it takes `AsyncFnOnce`, a function that has 
+different color than the original `FnOnce` function. This solution works fine, 
+at the cost of code duplication. 
+
+However, a more general and better solution is to define a single 
+`Option::map` function that can be **polymorphic** over the color of the 
+closure. This is where the effect system comes into play. For instance, the 
+`Option::map` function can be defined to be polymorphic over the color of the 
+closure as follows:
 
 ```rust
 impl<T> Option<T> {
@@ -790,55 +868,21 @@ different way. For instance, Go chooses to ignore the problem by simply not
 having any distinction between async and sync functions; all functions in Go
 are simpy `func`, no distinction between async and sync.
 
-### Effect System
-
-Previously, we have shown a motivating example of how the effect system can be 
-used not only to track side effects but also to solve the function coloring 
-problem. 
-
-Apart from those, the effect system has to handle several other aspects like:
-- **Effect composition**: How several effects can be composed together to form 
-a new effect. For instance, if a function body performs two effects `A` and `B`, 
-then the function's effect is the composition of `A` and `B`.
-- **Effect handling**: When a function handles an effect, the effect is removed
-from the function's effect set. For instance, if a function performs an effect
-`A` and handles it, then the function's effect set no longer contains `A`.
-- etc.
-
-However, in this write-up, we will not go into the details of the effect system, 
-as it could be an another interesting topic for a future write-up. Instead, we 
-will briefly discuss the two different approaches to implement effect 
-systems that I have studied.
-
-In effect systems, the type is often extended with an additional *kind* 
-of type that represents the **set of effets**; this is similar to how Rust's 
-type system is extended with new **lifetime** kind to support the borrow 
-checker or **constant value** kind to support compile-time constant evaluation.
-
-As the time of writing this post, I've studied two different implementations of
-effect systems: **Koka** and **Flix**. Both languages have very similar effect 
-handler semantics (if I remember correctly), but they have different approaches 
-to the effect system.
-
-In Koka, the effect system is based on row polymorphism, which is also a system
-that's used to implement polymorphic extensible records. Surprisingly, it's
-a very natural fit for implementing effect systems. Koka's effect system is 
-what Ray's effect system closely follows. 
-
-On the other hand, Flix uses set formulae and boolean unification to implement
-the effect system. For instance, you could express the effect of a function as a
-set of effects and use set operations like union, intersection, and difference
-to compose the effect terms. This gives a very expressive system that can
-track complex effect relationships precisely.
 
 # Conclusion
 
 That's it for this write-up on effect handlers and effect system of Ray. We have 
 explored the semantics of effect handlers, how they are compiled into a
 coroutine state machine, and how it works together with effect system to 
-track and compose effects. In some sense, the best way to describe the current 
-system is that it's a combination of stackless coroutine + nice type system that 
-tracks effects.
+track and compose effects.
+
+Although, we didn't cover the effect-system in depth, as this could be a topic 
+for another write-up, but we have seen how the effect system can be used to 
+solve the function coloring problem and how it can be used to track and 
+compose effects in a type-safe manner.
+
+In some sense, the best way to describe the current system is that it's a 
+combination of stackless coroutine + nice type system that tracks effects.
 
 Also, if you're interested in the project and want to play with it, the compiler
 and the source code of Ray is available on [GitHub](https://github.com/Simmypeet/ray).
