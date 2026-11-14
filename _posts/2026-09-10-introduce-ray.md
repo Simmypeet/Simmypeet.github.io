@@ -1,7 +1,7 @@
 ---
 layout: post
 title: "Implementing Effect Handlers in Ray Programming Language"
-date: 2026-11-14 10:00:00 +0000
+date: 2026-14-11 10:00:00 +0000
 categories: update
 ---
 
