@@ -7,30 +7,171 @@ categories: update
 
 # Ray Programming Language
 
-My goal for Ray is to build a programming language that has the following 
-combination of features:
+Ray is a programming language that is designed to be a systems-leve language 
+with static type system and memory safety (like Rust). On top of that,
+Ray have an effect handlers and an effect system features that allows us to 
+define and manage complex control flow in the programs. 
 
-- A statically-typed system-level programming language that compiles to native 
-  code.
-- Enjoys the benefit of borrow checking and ownership model like Rust.
-- Has an effect system that tracks side effects and solves the function coloring 
-  problem.
-- Has an effect handler that can be compiled into a resonably efficient code.
-- Has an explicit-dictionary passing or OCaml's module system-like for ad-hoc
-  polymorphism.
+One of its selling point that I find interesting is that they provide a
+unified abstraction for implementing features like exceptions, async/await,
+and generators. This means that with only effect handlers, we can implement 
+those features without having to implement them as a separate language feature 
+with its own dedicated syntax.
 
-In this post, it will be a write-up of the effect handler feature of Ray.
+So in this write-up, I will summarize my understanding of effect handlers and
+effect system. And also, how these features are implemented in Ray programming
+language.
+
+## Oversimplified Explanation of Effect Handlers
+
+Effect handlers are a powerful abstraction that allows us to define and manage
+complex control flow in the programs. There are several programming languages
+that have implemented effect handlers. The one that I know are Koka, Flix, 
+Effekt, and Ante.
+
+This will be a very informal and oversimplified explanation of effect handlers 
+for those who are not familiar with the concept.
+
+The simplest way to understand effect handlers is to think of them as a feature
+that allows us to throw exceptions, catch them, and optionally resume the 
+computation where it's left off. Let's explore this through several examples!
+
+This example is written in a Python-like syntax, which everyone might be 
+familiar with:
+
+```python
+eff DivideByZeroException:
+    def throw(dividend: float) -> float
+
+def divide(dividend: float, divisor: float) -> float:
+    if divisor == 0:
+        fallback = raise DivideByZeroException.throw(dividend)
+        return fallback
+    else:
+        return dividend / divisor
+```
+
+This above example resembles a typical exception handling mechanism in many 
+programming languages. Except that, `DivideByZeroException` is actually not
+an exception type, but an **effect** that has a single **operation** called
+`throw`. 
+
+Another observation is that, 
+`raise DivideByZeroException.throw(dividend)` looks like a normal function call
+that can be used as an expression that give back a value?
+
+Normally, in a language like Python or Java, raising an exception is
+a statement that doesn't yield a value. Once the exception is raised, the
+function will be terminated and the control flow will be transferred to the 
+nearest enclosing exception handler. However, in our example, it suggests that
+the control flow may continue after the `raise` expression, which it can under
+the effect handler mechanism!
+
+Let's see how the `divide` function can be called and handled:
+
+```python
+def main():
+    try: 
+        let result = divide(10, 0)
+        print(f"Result: {result}")
+
+    except DivideByZeroException.throw(dividend) resume k:
+        k(dividend) # resume with whatever `dividend` value is
+```
+
+Again, this also looks like a typical try-except block in Python. Normally,
+once the exception `DivideByZeroException.throw` is raised, the control flow 
+will be transferred to the `except DivideByZeroException.throw(dividend)` 
+branch. 
+
+However, the unsual is in the `resume k` part of the `except` clause.
+The `resume k` binds the `k` variable to a **first-class continuation** that 
+can be called to resume the computation after the `raise` expression in the 
+`divide` function.
+
+The term **first-class** might sound intimidating, but it simply
+means that the variable `k` is:
+
+- just an ordinary variable that can be passed around, assigned to another 
+  variable, discarded, or stored in a list or a data structure, etc.
+- a callback function that can be called like a normal function, which will
+  go back to the point where the `raise` expression was called and resume the 
+  computation from there. In some sense, `k` simply has a type of 
+  `(float) -> Unit` (a function that takes an `int32` argument and returns 
+  nothing).
+
+The term **continuation** may also sound abstract, but in this case, the `k` 
+variable is a function that represents a **snapshot** of the program's execution
+at the point where the `raise` expression was called. So the term **snapshot**
+means that the `k` variable remembers what are the values of all the local
+variables at the point where the `raise` expression was called and what is the
+next instruction or statement to be executed after the `raise` expression.
+
+To make it even more concrete, conceptually, this is what the `k` continuation 
+might look like:
+
+```python
+def k(dividend: float):
+    divisor = 0 # it also remembers the value of what `divisor` was!
+
+    # the slice of code after the `raise` expression in the `divide` function
+    fallback = dividend
+    returnValueOfDivide = fallback
+
+    # the slice of code in the `try` block in the `main` function 
+    result = returnValueOfDivide
+    print(f"Result: {result}")
+```
+
+So combining all the pieces together, the program would simply print out 
+`Result: 10` since the `divide` function will raise the 
+`DivideByZeroException.throw` effect, which will be handled in the `main` 
+function and resume the computation with the `dividend` value of `10`.
+
+Okay, how about this example:
+
+```python
+def main():
+    try:
+        let result = divide(10, 0)
+        print(f"Result: {result}")
+    except DivideByZeroException.throw(dividend) resume k:
+        print(f"Divide by zero exception!")
+```
+
+In this case, the program will simply print out "Divide by zero exception!" and
+the "Result: ..." line will never be printed. In this case, `k` is simply 
+ignored and never called, which means that the computation after the `raise`
+expression, including the `print(f"Result: {result}")` line, will never be 
+executed. 
+
+This is essentially a normal exception handling mechanism that we are familiar
+with!
+
+We start to see how the claim that effect handlers can be used to implement 
+exceptions, async/await, and generators is true. 
+
+Observe that the behavior of the effect handler depends on how we handle the
+continuation `k`:
+
+- If we ignore the conrinuation `k`, then the effect handler behaves like 
+  exception handling. It's sometimes called "zero-resumption".
+- If we call the continuation `k` exactly once at the tail position (the 
+  `k(...)` expression is called last in the `except` clause), then the
+  effect handler behaves like a normal callback function. It's sometimes called 
+  "tail-resumptive". 
+- If we store the continuation `k` in a list and schedule it to be called later
+  at some appropriate moment, then it starts to behave like an async/await or 
+  task scheduling.
+- If we call the continuation `k` multiple times with different arguments, then
+  it starts to behave like search tree traversal, some kind of backtracking 
+  algorithmor "non-deterministic".
 
 ## Ray's Effect Handlers and Compilation Model
 
-Effect handlers are a powerful abstraction that allows us to define and manage
-complex control flow in the programs. For instance, effect handlers can be
-used to implement features like exceptions, async/await, generators, and more. 
-
-Often, these features like async/await, exceptions, and generators are 
-implemented as a separate language feature with its own dedicated syntax. 
-However, the effect handler ought to be a more general and unified abstraction
-that can be used to implement them.
+So far, we have seen how effect handlers can be used to implement exceptions.
+In this section, we'll explore the actual semantics of the effect handler 
+feature of Ray and  how it is implemented under the hood through examples.
 
 Let's explore the effect handler feature of Ray through an example of 
 implementing a generator function that generates fibonacci numbers.
@@ -46,7 +187,7 @@ The `Yield` is defined as an **effect** that has a single **operation** called
 `yield`. This looks similar to defining a trait or an interface in other 
 programming languages!.
 
-Let's define a function that uses the `Yield` effect to generate fibonacci 
+Next, let's define a function that uses the `Yield` effect to generate fibonacci 
 numbers as follows:
 
 ```ray
@@ -68,7 +209,7 @@ yield the next fibonacci number.
 
 The syntax `\ {Yield[int32]}` is a part of the **effect system** of Ray, which
 tracks which effects a function can perform. This can be thought of as an 
-extension of the type system that tracks side effects in addition to types.
+extension of the type system that tracks effects in addition to types.
 That annotation is required because the `Yield.yield(a)` operation performed
 inside the function body emits the `Yield[int32]` effect, and the function
 signature must reflect that. 
@@ -99,7 +240,9 @@ that can be paused and gives the value back to the caller. Then, the caller
 can resume the coroutine again from where it left off. A single coroutine can
 pause and be resumed multiple times, which is different from a normal function 
 that can only be called once, run to completion, and return a value back to the 
-caller.
+caller. Coroutine simply is a lowering strategy that Ray uses to implement 
+**first-class continuation `k`** that we discussed earlier. The details of how
+this works will be discussed in a later section.
 
 From now on, we will call `gen` a "coroutine" that represents the 
 `generateFibonacci` function.
@@ -140,12 +283,9 @@ As this branch suggests, it will match the `Yield.yield` operation and bind the
 yielded value to `value` variable of type `int32`; this is very similar to
 matching a variant of an enum. 
 
-The `resume k` part is unusual, it represents the **continuation** of the 
+The `resume k` part represents the **first-class continuation** of the 
 coroutine `gen` that can be resumed later. In this case, it is a point after
 the `Yield.yield(a)` operation in the `generateFibonacci` function. 
-
-`k` is a first-class value that can be passed around, assigned to a variable,
-and called like a function, just like the `gen` coroutine.
 
 In this example, we assign `k` to `gen` variable so that we can resume the 
 coroutine in the next iteration of the while loop.
@@ -168,24 +308,12 @@ operation at each iteration. The `k` continuation allows us to resume the
 coroutine function from where it left off, enabling us to generate the next 
 fibonacci number.
 
-## What Can It be Used For?
-
-So far, the above example shows how to implement a generator function using
-effect handlers. However, it can also be used to implement various features
-that require control flow suspension. 
-
-Implementing execeptions can be done by defining an `Exception` effect with an 
-operation like `raise(str: String) -> Never`. The `Never` type indicates a type 
-that can never have a value. This means that once the `raise`
-operation is performed, the rest of the function can never be resumed, and the 
-control flow will be transferred to the nearest enclosing `handle` expression.
-
-
 ### Effectful Code Compilation Model
 
-We briefly mentioned that Ray uses a coroutine to implement control flow 
-suspension, specifically stackless coroutines. This is a key part of how Ray 
-compiles effectful code with minimal memory overhead. 
+We briefly mentioned that Ray uses a coroutine to implement first-class 
+continuations and control flow suspension, specifically stackless coroutines. 
+This is a key part of how Ray lowers effect handlers and continuations 
+efficiently with relatively low memory overhead.
 
 Stackless coroutine is not a new concept, it has been used by Rust and C# to 
 implement async/await feature. The term "stackless" in this 
@@ -197,9 +325,15 @@ an ordinary state machine, think of plain old `enum` in Rust.
 different platforms. However, it does have some limitations, which we will
 discuss later in this post.
 
+It turns out that Rust's async/await (which is also implemented as a stackless 
+coroutine) already gives us a good starting point for implementing effect 
+handlers and continuations in Ray.
+
 So, let's explore how the compilation work through the lens of existing building
 blocks used to implement stackless coroutine in Rust, which is what Ray's 
-compilation model is based on.
+compilation model is based on. And for a moment, let's imagine that Ray 
+compiles the code into Rust, which is not the case, but it will help us 
+understand the compilation model of Ray.
 
 First, let's look at Coroutine's interface. Rust's Coroutine trait should give 
 us a good picture of how the coroutine state machine is defined:
@@ -219,18 +353,20 @@ pub trait Coroutine<R> { // R: The type of the argument that the coroutine expec
 }
 ```
 
-Every coroutine state machine implements the `Coroutine` trait, which has a
-single method `resume`. It drives the coroutine state machine forward at a time
-and returns whether the coroutine has yielded a value or ran to completion via
-the `CoroutineState` enum.
+In Rust, every coroutine state machine implements the `Coroutine` trait, which 
+has a single method `resume`. It drives the coroutine state machine forward at a 
+time and returns whether the coroutine has yielded a value or ran to completion 
+via the `CoroutineState` enum.
 
-We could imagine that the `generateFibonacci` function from the motivating
-example is lowered into an enum that implements the `Coroutine` trait like this:
+So how does this tie into the effect handler feature of Ray? Let's imagine that
+we will lower the `generateFibonacci` function into an efficient Rust enum 
+state machine that implements the `Coroutine` trait. The lowered coroutine 
+might look like this:
 
 ```rust
 pub enum GenerateFibonacci {
     Start,
-    State { a: i32, b: i32 },
+    Yielding { a: i32, b: i32 },
 }
 
 impl Coroutine<()> for GenerateFibonacci {
@@ -240,10 +376,10 @@ impl Coroutine<()> for GenerateFibonacci {
     fn resume(self: Pin<&mut Self>, _: ()) -> CoroutineState<Self::Yield, Self::Return> {
         match self.get_mut() {
             state @ GenerateFibonacci::Start => {
-                *state = GenerateFibonacci::State { a: 0, b: 1 };
+                *state = GenerateFibonacci::Yielding { a: 0, b: 1 };
                 CoroutineState::Yielded(0)
             }
-            GenerateFibonacci::State { a, b } => {
+            GenerateFibonacci::Yielding { a, b } => {
                 let temp = *a;
                 *a = *b;
                 *b = temp + *b;
@@ -253,6 +389,10 @@ impl Coroutine<()> for GenerateFibonacci {
     }
 }
 ```
+
+If stripped down to he bare minimum without `Pin` and `.get_mut()` details,
+`GenerateFibonacci` enum is simply a state machine and `resume` method 
+simply defines the transition between states. 
 
 Then, the  `main` function of the previous example could be lowered into a 
 function that drives the `GenerateFibonacci` coroutine like this:
@@ -273,8 +413,10 @@ pub fn main() {
 }
 ```
 
-Voila! This is roughly how Ray compiles the effectful code and the `handle` 
-expression.
+Voila! That's it. This is roughly how Ray compiles the effectful code and the 
+`handle` expression. The actual implementation in Ray, however, lowers the code
+into C using combinations of `struct` and `union` instead of Rust `enum`, but 
+the idea and lowering shape is very similar.
 
 Another detail is that effect operations can take arguments and yield values of
 different types.
@@ -577,8 +719,9 @@ impl<T> Option<T> {
 }
 ```
 
-A more general and better solution is to define a single `Option::map` function
-that can be **polymorphic** over the color of the closure. This is where the
+This solution works fine, at the cost of code duplication. A more general and 
+better solution is to define a single `Option::map` function that can be 
+**polymorphic** over the color of the closure. This is where the
 effect system comes into play. For instance, the `Option::map` function can be 
 defined as follows:
 
@@ -596,7 +739,7 @@ impl<T> Option<T> {
 A new polymorphic variable `E` is introduced to represent the **color** or
 **effect** of the closure. `E` can describe "asyncness", "throwness", or 
 "failability", etc. With this definition, the `Option::map` function's color is 
-now  dependent on the color of the closure. For instance, if the closure is 
+now dependent on the color of the closure. For instance, if the closure is 
 `async`, then the `Option::map` function is also `async`.
 
 In Rust, there's also an ongoing discussion about this problem and there's a
@@ -637,6 +780,8 @@ Let's see how both languages represent the effect in their systems.
 > Disclaimer: The following effect syntax is a very simplified version of the
 acutal syntax used in Koka and Flix.
 
+### Koka's Effect System
+
 Here's the brief effect syntax of Koka:
 
 ```
@@ -648,9 +793,50 @@ EffectRow ::=
    | {Effect | EffectRow}     // Effect Extension
 ```
 
-In the above very simplified syntax, the `Effect` is structured as a linked
-list of `Label`s, which is a row polymorphic representation. Whereas, `Var` is 
-a polymorphic effect variable or inference variable.
+In the above very simplified syntax, the `EffectRow` is structured as a linked
+list of `Effect`. Whereas, `Var` is a polymorphic effect variable or inference 
+variable. Mainly, multiple `Effect`s can be composed together in a single
+`EffectRow` via effect extension `{Effect | EffectRow}` syntax. 
+
+For instance, a set of effects like `IO`, `State[int32]`, and `Yield[int32]` can 
+be expressed as:
+
+```
+{IO | {State[int32] | {Yield[int32] | {}}}}
+```
+
+Or can be written in a more succinct way as:
+
+```
+{IO, State[int32], Yield[int32]}
+```
+
+Notice that the `EffectRow` can be **extended** with multiple `Effect`s and 
+ends with either a single effect polymorphic variable or an empty effect `{}`. 
+
+Moreover, the effect row can end with a polymorphic effect variable, which 
+allows the effect row to be extended with some more unknown effects that will 
+be inferred or instantiated later. 
+
+For instance, the following `EffectRow` that ends with a polymorphic effect 
+variable `a` can be expressed as:
+
+```
+{IO | {State[int32] | {Yield[int32] | a}}}
+
+or 
+
+{IO, State[int32], Yield[int32] | a}
+```
+
+And later, if `a` is instantiated with `{Exception, Log}`, then the effect row 
+will be:
+
+```
+{IO, State[int32], Yield[int32], Exception, Log}
+```
+
+### Flix's Effect System
 
 On the other hand, here's the brief effect syntax of Flix:
 
@@ -659,12 +845,37 @@ Effect ::= EffectSymbol      // For example, `IO`, `State`, `Yield`, etc.
 
 Op ::= ...                   // Set operations like union, intersection, xor, etc.
 
-EffectRow ::=
+EffectSet ::=
     | Var
     | {}                     // Empty effect
     | Universal              // Universal effect
-    | EffectRow Op EffectRow // Composing effects with set operations
+    | Effect                 // Singleton effect
+    | ~ EffectSet            // Effect negation
+    | EffectSet Op EffectSet // Composing effects with set operations
 ```
 
-In Flix, the `Effect` is composed in a set formulae representation, looking
-like a tree structure. 
+In Flix, the `EffectSet` composes multiple `Effect` using set operations like 
+union, intersection, and negation. Using similar example as before, a set of 
+effects like `IO`, `State`, and `Yield` can be expressed as:
+
+```
+IO + State + Yield
+```
+
+This builds an `EffectSet` by composing multiple `Effect` leaves using the 
+union `+` operator. Similarly, the `EffectSet` can have a polymorphic effect
+variable `a` that can be instantiated later like in Koka.
+
+For example:
+
+```
+IO + State + Yield + a
+```
+
+In this case, `a` polymorphic variable simply becomes an another leaf of the
+`EffectSet` tree, like the other `Effect` leaves. Obviously, the polymorphic
+effect variable `a` can be instantiated later with another `EffectSet` and 
+resulting in a new (perhaps larger) `EffectSet` tree.
+
+### Inferring Effects of Expressions in Koka
+
