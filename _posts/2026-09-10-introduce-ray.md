@@ -7,10 +7,11 @@ categories: update
 
 # Ray Programming Language
 
-Ray is a programming language that is designed to be a systems-leve language 
-with static type system and memory safety (like Rust). On top of that,
-Ray have an effect handlers and an effect system features that allows us to 
-define and manage complex control flow in the programs. 
+Ray is a programming language that is designed to be a systems-level language 
+with static type system and memory safety (like Rust). 
+
+On top of that, Ray have effect handlers and effect system features that allows 
+us to define and manage complex control flow in the programs. 
 
 One of its selling point that I find interesting is that they provide a
 unified abstraction for implementing features like exceptions, async/await,
@@ -654,7 +655,38 @@ type system to track side effects as well. This is where the **effect system**
 comes into play.
 
 Generally, the effect system tracks which set of effects a function can perform 
-and ensures that all effects are handled properly. However, it's also about how 
+and ensures that all effects are handled properly. 
+
+In the earlier example of `generateFibonacci` function, the effect system 
+ensures that the we specify the `\ {Yield[int32]}` annotation in the function 
+signature, which indicates that the function can perform the `Yield[int32]` 
+effect. For instace, if we try to perform an effect that is not specified in the 
+function signature, the compiler will raise an error:
+
+```ray
+pub eff Yield[a]:
+    def yield(value: a)
+
+
+pub eff Log:
+    def log(num: int32)
+
+
+pub def generateFibonacci() -> () \ {Yield[int32]}:
+    let mut a = 0
+    let mut b = 1
+    while true:
+        Yield.yield(a)
+
+        # This is not allowed since the function only allows `Yield[int32]
+        Log.log(a)
+
+        let temp = a
+        a = b
+        b = temp + b
+```
+
+However, it's also about how 
 they are composed and interact with each other. Let's explore the effect system
 through the notorious **function coloring problem**.
 
@@ -751,11 +783,27 @@ different way. For instance, Go chooses to ignore the problem by simply not
 having any distinction between async and sync functions; all functions in Go
 are simpy `func`, no distinction between async and sync.
 
-### Effect System and Effect Polymorphism
+### Effect System
 
 Previously, we have shown a motivating example of how the effect system can be 
 used not only to track side effects but also to solve the function coloring 
-problem. In effect systems, the type is often extended with an additional *kind* 
+problem. 
+
+Apart from those, the effect system has to handle several other aspects like:
+- **Effect composition**: How several effects can be composed together to form 
+a new effect. For instance, if a function body performs two effects `A` and `B`, 
+then the function's effect is the composition of `A` and `B`.
+- **Effect handling**: When a function handles an effect, the effect is removed
+from the function's effect set. For instance, if a function performs an effect
+`A` and handles it, then the function's effect set no longer contains `A`.
+- etc.
+
+However, in this write-up, we will not go into the details of the effect system, 
+as it could be an another interesting topic for a future write-up. Instead, we 
+will briefly discuss the two different approaches to implement effect 
+systems that I have studied.
+
+In effect systems, the type is often extended with an additional *kind* 
 of type that represents the **set of effets**; this is similar to how Rust's 
 type system is extended with new **lifetime** kind to support the borrow 
 checker or **constant value** kind to support compile-time constant evaluation.
@@ -767,7 +815,8 @@ to the effect system.
 
 In Koka, the effect system is based on row polymorphism, which is also a system
 that's used to implement polymorphic extensible records. Surprisingly, it's
-a very natural fit for implementing effect systems.
+a very natural fit for implementing effect systems. Koka's effect system is 
+what Ray's effect system closely follows. 
 
 On the other hand, Flix uses set formulae and boolean unification to implement
 the effect system. For instance, you could express the effect of a function as a
@@ -775,107 +824,19 @@ set of effects and use set operations like union, intersection, and difference
 to compose the effect terms. This gives a very expressive system that can
 track complex effect relationships precisely.
 
-Let's see how both languages represent the effect in their systems. 
+# Conclusion
 
-> Disclaimer: The following effect syntax is a very simplified version of the
-acutal syntax used in Koka and Flix.
+That's it for this write-up on effect handlers and effect system of Ray. We have 
+explored the semantics of effect handlers, how they are compiled into a
+coroutine state machine, and how it works together with effect system to 
+track and compose effects. In some sense, the best way to describe the current 
+system is that it's a combination of stackless coroutine + nice type system that 
+tracks effects.
 
-### Koka's Effect System
+Also, if you're interested in the project and want to play with it, the compiler
+and the source code of Ray is available on [GitHub](https://github.com/Simmypeet/ray).
 
-Here's the brief effect syntax of Koka:
-
-```
-Effect ::= EffectSymbol[Ty*]  // For example, `IO`, `State[int]`, `Yield[int]`, etc.
-
-EffectRow ::= 
-   | Var
-   | {}                       // Empty effect
-   | {Effect | EffectRow}     // Effect Extension
-```
-
-In the above very simplified syntax, the `EffectRow` is structured as a linked
-list of `Effect`. Whereas, `Var` is a polymorphic effect variable or inference 
-variable. Mainly, multiple `Effect`s can be composed together in a single
-`EffectRow` via effect extension `{Effect | EffectRow}` syntax. 
-
-For instance, a set of effects like `IO`, `State[int32]`, and `Yield[int32]` can 
-be expressed as:
-
-```
-{IO | {State[int32] | {Yield[int32] | {}}}}
-```
-
-Or can be written in a more succinct way as:
-
-```
-{IO, State[int32], Yield[int32]}
-```
-
-Notice that the `EffectRow` can be **extended** with multiple `Effect`s and 
-ends with either a single effect polymorphic variable or an empty effect `{}`. 
-
-Moreover, the effect row can end with a polymorphic effect variable, which 
-allows the effect row to be extended with some more unknown effects that will 
-be inferred or instantiated later. 
-
-For instance, the following `EffectRow` that ends with a polymorphic effect 
-variable `a` can be expressed as:
-
-```
-{IO | {State[int32] | {Yield[int32] | a}}}
-
-or 
-
-{IO, State[int32], Yield[int32] | a}
-```
-
-And later, if `a` is instantiated with `{Exception, Log}`, then the effect row 
-will be:
-
-```
-{IO, State[int32], Yield[int32], Exception, Log}
-```
-
-### Flix's Effect System
-
-On the other hand, here's the brief effect syntax of Flix:
-
-```
-Effect ::= EffectSymbol      // For example, `IO`, `State`, `Yield`, etc.
-
-Op ::= ...                   // Set operations like union, intersection, xor, etc.
-
-EffectSet ::=
-    | Var
-    | {}                     // Empty effect
-    | Universal              // Universal effect
-    | Effect                 // Singleton effect
-    | ~ EffectSet            // Effect negation
-    | EffectSet Op EffectSet // Composing effects with set operations
-```
-
-In Flix, the `EffectSet` composes multiple `Effect` using set operations like 
-union, intersection, and negation. Using similar example as before, a set of 
-effects like `IO`, `State`, and `Yield` can be expressed as:
-
-```
-IO + State + Yield
-```
-
-This builds an `EffectSet` by composing multiple `Effect` leaves using the 
-union `+` operator. Similarly, the `EffectSet` can have a polymorphic effect
-variable `a` that can be instantiated later like in Koka.
-
-For example:
-
-```
-IO + State + Yield + a
-```
-
-In this case, `a` polymorphic variable simply becomes an another leaf of the
-`EffectSet` tree, like the other `Effect` leaves. Obviously, the polymorphic
-effect variable `a` can be instantiated later with another `EffectSet` and 
-resulting in a new (perhaps larger) `EffectSet` tree.
-
-### Inferring Effects of Expressions in Koka
-
+**AI Disclosure:** LLMs were used to assist in implementing the Ray compiler, 
+although everything was reviewed and verified by the author. But the write-up
+was written entirely by myself without any LLM assistance, as I want to solidify
+my understanding of the topic and to share my understanding with others.
