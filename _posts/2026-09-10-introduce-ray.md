@@ -34,11 +34,12 @@ This will be a very informal and oversimplified explanation of effect handlers
 for those unfamiliar with the concept.
 
 The simplest way to understand effect handlers is to think of them as a feature
-that allows us to throw exceptions, catch them, and optionally resume the 
-computation where it's left off. Let's explore this through several examples!
+that allows us to throw exceptions, catch them, and **optionally resume** the 
+computation where the exception was thrown. So let's introduce effect handlers
+as a **resumable exception**!
 
-This example is written in a Python-like syntax, which everyone might be 
-familiar with:
+Consider the classic divide-by-zero exception wirtten in a language with 
+Python-like syntax:
 
 ```python
 eff DivideByZeroException:
@@ -59,14 +60,16 @@ an exception type, but an **effect** that has a single **operation** called
 
 Another observation is that
 `raise DivideByZeroException.throw(dividend)` looks like a normal function call
-that can be used as an expression that gives back a value?
+that can be used as an expression that gives back a value, instead of a 
+statement?
 
 Normally, in a language like Python or Java, raising an exception is
 a statement that doesn't yield a value. Once the exception is raised, the
-function will be terminated, and the control flow will be transferred to the 
-nearest enclosing exception handler. However, in our example, it suggests that
-the control flow may continue after the `raise` expression, which it can under
-the effect handler mechanism!
+function will be terminated, and the execution will be transferred to the 
+nearest enclosing exception handler. 
+
+However, in our example, it suggests that the execution may continue after the 
+`raise` expression, which it can under the effect handler mechanism!
 
 Let's see how the `divide` function can be called and handled:
 
@@ -83,14 +86,16 @@ def main():
 Again, this also looks like a typical try-except block in Python. Normally,
 once the exception `DivideByZeroException.throw` is raised, the control flow 
 will be transferred to the `except DivideByZeroException.throw(dividend)` 
-branch. 
+branch.
 
-However, the unsual part is in the `resume k` part of the `except` clause.
+However, the unsual part is in the `resume k` part of the `except` clause. This
+is a hypothetical syntax illustrating the effect handler mechanism.
+
 The `resume k` binds the `k` variable to a **first-class continuation** that 
 can be called to resume the computation after the `raise` expression in the 
 `divide` function.
 
-The term **first-class** might sound intimidating, but it simply
+Here, the term **first-class** might sound intimidating, but it simply
 means that the variable `k` is:
 
 - just an ordinary variable that can be passed around, assigned to another 
@@ -101,12 +106,14 @@ means that the variable `k` is:
   `(float) -> Unit` (a function that takes an `int32` argument and returns 
   nothing).
 
-The term **continuation** may also sound abstract, but in this case, the `k` 
+And the term **continuation** may also sound abstract, but in this case, the `k` 
 variable is a function that represents a **snapshot** of the program's execution
-at the point where the `raise` expression was called. So the term **snapshot**
-means that the `k` variable remembers what the values of all the local
-variables at the point where the `raise` expression was called and what is the
-next instruction or statement to be executed after the `raise` expression.
+at the point where the `raise` expression was called. 
+
+This means that the `k` variable remembers what the values of all the local
+variables in the callstack were at the point where the `raise` expression was 
+called and what is the next instruction or statement to be executed after the 
+`raise` expression.
 
 To make it even more concrete, conceptually, this is what the `k` continuation 
 might look like:
@@ -129,7 +136,7 @@ So combining all the pieces together, the program would simply print out
 `DivideByZeroException.throw` effect, which will be handled in the `main` 
 function and resume the computation with the `dividend` value of `10`.
 
-Okay, how about this example:
+Cool! let's consider an another example:
 
 ```python
 def main():
@@ -146,14 +153,14 @@ ignored and never called, which means that the computation after the `raise`
 expression, including the `print(f"Result: {result}")` line, will never be 
 executed. 
 
-This is essentially a normal exception handling mechanism that we are familiar
-with!
+This is essentially a normal **exception handling** mechanism that we are 
+familiar with!
 
 We start to see how the claim that effect handlers can be used to implement 
 exceptions, async/await, and generators is true. 
 
-Observe that the behavior of the effect handler depends on how we handle the
-continuation `k`:
+We can play with the `k` continuation differently to implement different 
+control flow mechanisms such as:
 
 - If we ignore the conrinuation `k`, then the effect handler behaves like 
   exception handling. It's sometimes called "zero-resumption".
@@ -174,8 +181,13 @@ So far, we have seen how effect handlers can be used to implement exceptions.
 In this section, we'll explore the actual semantics of the effect handler 
 feature of Ray and how it is implemented under the hood through examples.
 
-Let's explore the effect handler feature of Ray through an example of 
-implementing a generator function that generates fibonacci numbers.
+Let's explore the actual effect handler feature of Ray through an another 
+example of implementing a generator function that generates fibonacci numbers.
+
+> Note that the semantic of effect handlers in Ray is slightly different from the
+divide-by-zero exception example we discussed earlier. The earlier example 
+introduces the concept of effect handlers in a simplified manner, and it's more
+like how Flix's effect handlers semantics work.
 
 Here's how an *effect* can be defined in Ray:
 
@@ -208,13 +220,17 @@ perform the `Yield[int32]` effect. Inside the function body, it's defined as
 an infinite loop that repeatedly performs the `Yield.yield(a)` operation to
 yield the next fibonacci number.
 
+Notice that this function doesn't return fibonacci numbers in the traditional
+`return` sense, but instead yields the next fibonacci number via the 
+`Yield.yield(a)` operation. 
+
 The syntax `\ {Yield[int32]}` is a part of the **effect system** of Ray, which
 tracks which effects a function can perform. This can be thought of as an 
 extension to the type system that tracks effects in addition to types.
 
 That annotation is required because the `Yield.yield(a)` operation performed
 inside the function body emits the `Yield[int32]` effect, and the function
-signature must reflect that. 
+signature must reflect that.  
 
 To give a complete example, we can define a function that print the first 10
 fibonacci numbers:
@@ -233,37 +249,58 @@ pub def main():
                 break
 ```
 
+There's a lot going on in the `main` function, so let's break it down step by 
+step.
+
 First, the expression `coro generateFibonacci()` reifies the function into a
 **coroutine**. This expression doesn't immediately run the `generateFibonacci`
 function, but instead returns a coroutine that can be resumed later. 
 
-> The oversimplified explanation of a coroutine is to think of it as a function 
-that can be paused and gives the value back to the caller. Then, the caller
-can resume the coroutine again from where it left off. A single coroutine can
-pause and be resumed multiple times, which is different from a normal function 
-that can only be called once, run to completion, and return a value back to the 
-caller. 
+So what is a coroutine? A coroutine is a special kind of function that can be
+paused and resumed later. So,variable `gen` is a coroutine of the 
+`generateFibonacci` function. 
 
-> This is where Ray's syntax and semantics of effect handlers diverge from the 
-original divide-by-zero exception example. In the divide-by-zero example, it
-used a `try-except` block syntax to handle the effect, but in this example, 
-it uses a combination of `coro` and `handle` expressions to handle the effect.
-Here, the Coroutine is a lowering strategy that Ray uses to implement 
-**first-class continuation `k`** that we discussed earlier. The details of how
-this works will be discussed in a later section.
+Coroutine in some sense is a callback object that you can call to it multiple 
+times, but each time you call it, it starts from where it left off from the 
+last time it was called. This is different from a normal function callback like 
+closure or lambda, which always starts from the beginning of the function body 
+every time it is called.
 
-From now on, we will call `gen` a "coroutine" that represents the 
-`generateFibonacci` function.
+So in this case, every time we call to the coroutine of `generateFibonacci`, it
+will run until it hits the `Yield.yield(a)` operation, then pause and return the
+yielded value back to the caller (the fibonacci number). The next time we call 
+to the coroutine, it will resume from the last `Yield.yield(a)` operation and 
+continue to run until it hits the next `Yield.yield(a)` operation, and so on. 
 
-Inside the while loop, the expression `handle gen(): ...` resumes the coroutine
-and handles the effects that are performed by the coroutine immediately after. 
-In this case, the `gen`, which represent the `generateFibonacci` function, 
-will run until it performs the  `Yield.yield(a)` operation then pause and return 
-the yielded value back to the `main` function. 
+If we recall to the previous divide-by-zero exception example, the coroutine is 
+the mechanism that allows us to implement the first-class continuation!
 
-Once the coroutine pauses, the `handle` expression will match the performed 
-effect operation and execute the corresponding branch of the `case` statement; 
-this is similar to how a `match` expression works in Rust.
+Sometimes, we refer to the coroutine as a **state machine** because it indeed 
+has states:
+- What the values of the local variables are at the point where the coroutine 
+  is paused.
+- What point in the function body the coroutine is paused at.
+
+So what the state of the coroutine could be in this case? Below is the table
+of the state of the coroutine at each call to the coroutine:
+
+| Call # | Starting State | Ending State | Result (Yield or Return) |
+| - | - | - | - |
+| 1 | N/A | a=0, b=1 | Yield.yield(0) |
+| 2 | a=0, b=1 | a=1, b=1 | Yield.yield(1) |
+| 3 | a=1, b=1 | a=1, b=2 | Yield.yield(2) |
+| 4 | a=1, b=2 | a=2, b=3 | Yield.yield(3) |
+| 5 | a=2, b=3 | a=3, b=5 | Yield.yield(5) |
+| ... | ... | ... | ... |
+
+Each time we call to the coroutine, it reads off the current state, executes the 
+function body, updates its internal state, and returns the yielded value back 
+to the caller. In the case of the `generateFibonacci` function, we can 
+call the coroutine indefinitely to generate the next fibonacci number. Normally,
+in other cases, the coroutine will terminate/end when it reaches the end of the function body or when it hits a `return` statement.
+
+Once, we have a good understanding of what a coroutine is, we can now look at
+the `handle` expression inside the while loop.
 
 ```ray
 pub def main():
@@ -278,6 +315,16 @@ pub def main():
                 break
 ```
 
+> From now on, we'll use the term **resume** the coroutine instead of **call** the
+coroutine to avoid confusion with normal function calls.
+
+You'll notice that the `handle` expression looks very similar to `match` 
+expression in Rust. That's because the `handle` expression is essentially a
+`match` on the result of resuming the coroutine `gen()`. Here, we have two
+branches: one for the `Yield.yield` operation and one for when the coroutine
+finishes normally (reaches the end of the function body or hits a `return` 
+statement).
+
 Let's take a closer look at `case Yield.yield ...` branch:
 
 ```ray
@@ -291,9 +338,9 @@ As this branch suggests, it will match the `Yield.yield` operation and bind the
 yielded value to `value` variable of type `int32`; this is very similar to
 matching a variant of an enum. 
 
-The `resume k` part represents the **first-class continuation** of the 
-coroutine `gen` that can be resumed later. In this case, it is a point after
-the `Yield.yield(a)` operation in the `generateFibonacci` function. 
+The `resume k` part represents the next-state of the coroutine after the 
+`Yield.yield` that can be resumed later. This is the first-class continuation 
+that we discussed.  
 
 In this example, we assign `k` to `gen` variable so that we can resume the 
 coroutine in the next iteration of the while loop.
@@ -308,54 +355,43 @@ case return x:
 This branch is invoked when the coroutine finishes (returns normally). 
 The `return x` pattern binds the return value of the coroutine to `x` variable. 
 In this example, `x` is simply a unit value `()` and the branch breaks out of 
-the while loop since it doesn't have any more number to yield.
+the while loop since it doesn't have any more number to yield. That said, the 
+`generateFibonacci` function is an infinite loop, so this branch will never be
+executed in this example.
 
 In summary, the above example will print out first 10 fibonacci numbers. It
 works by repeatedly resuming the coroutine and handling the `Yield.yield`
 operation at each iteration. The `k` continuation allows us to resume the 
 coroutine function from where it left off, enabling us to generate the next 
-fibonacci number.
+fibonacci number. 
 
 ### Difference Between Divide-by-Zero Exception Example and Fibonacci Generator Example
 
-The divide-by-zero exception example would describe how most programming 
-languages implement the semantics of effect handlers, such as Flix. 
+In some sense, the fibonacci generator coroutine example is similar to the
+divide-by-zero exception example we discussed earlier. Both examples involve
+suspending computation and resuming it later. 
 
-However, the fibonacci generator example is how Ray implements the semantics of 
-effect handlers, which quite different from the divide-by-zero example.
+So, Ray's first-class continuation is implemented through the coroutine 
+mechanism, therefore, it losts the ability to **resume the computation multiple times**. This might find contradictory to the earlier explanation that coroutine
+can be resumed multiple times. 
 
-One minor difference is that the divide-by-zero example uses a `raise` keyword
-in front of the `DivideByZeroException.throw` operation, but the fibonacci 
-generator doesn't. This is simply a syntactic difference, and it was for the
-sake of differentiating the effect operation from a normal function call.
+However, the **multiple-resumption** in this context refers to the ability to 
+resume the computation **from the same point** multiple times to explore 
+different paths of execution. The coroutine simply cannot do that because the
+state-machine can only progress forward, and once it progresses, it cannot 
+rewind the state back to the previous state to explore a different path of 
+execution.
 
-However, the major difference is that in the main function, the divide-by-zero
-example executes the `try` block immediately, but in the fibonacci generator
-example, we have to explicitly reify the `generateFibonacci` function into a 
-coroutine using `coro` expression and then resume the coroutine using `handle` expression, so it takes an extra step to start the computation. 
+Technically, you can **sort-of** emulate multiple-resumption using coroutines
+by **cloning** the coroutine state machine before resuming it. This way, you can
+always have a copy of the original state machine to resume from the same point 
+multiple times. However, cloning the entire state machine of a coroutine can
+be non-trivial and its semantic can be tricky, especially in a language that
+has mutable variables and linear resources.
 
-In some sense, this means that in the fibonacci generator example, we directly 
-receive the **first-class continuation** of the `generateFibonacci` function 
-upfront.
-
-The differences between the two examples might be confusing at first, but they
-have things in common:
-- Both can **suspend** the computation and **yield a value back** to the caller. 
-  For instance, `raise DivideByZeroException.throw(dividend)` in divide-by-zero
-  example and `Yield.yield(a)` in fibonacci generator example both suspend the 
-  computation
-- After suspending the computation and yielding a value back, both can 
-  intercept (catch) the effect operation and resume the computation from where 
-  it left off. 
-- Both receive a **first-class continuation** that can be called to resume the    
-  computation. In the divide-by-zero example, the continuation is received in the 
-  `resume k` part of the `except` clause, while in the fibonacci generator 
-  example, the continuation is received both in the `resume k` part of the `case` 
-  clause and in the `coro` expression.
-
-To understand how Ray's effect handlers work under the hood and compare it with 
-the divide-by-zero exception example, we need to explore the compilation model 
-of Ray's effect handlers.
+In other implementation of effect handlers like Flix, Koka, and Effekt, they
+support multiple-resumption. But I'm not sure how they implement it under the 
+hood.
 
 ### Effectful Code Compilation Model
 
