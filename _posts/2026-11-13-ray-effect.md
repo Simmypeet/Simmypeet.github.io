@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Implementing Effect Handlers in Ray Programming Language"
+title: "Implementing Effect Handlers in the Ray Programming Language"
 date: 2026-11-13 10:00:00 +0000
 categories: update
 ---
@@ -38,7 +38,7 @@ that allows us to throw exceptions, catch them, and **optionally resume** the
 computation where the exception was thrown. So let's introduce effect handlers
 as a **resumable exception**!
 
-Consider the classic divide-by-zero exception wirtten in a language with 
+Consider the classic divide-by-zero exception written in a language with 
 Python-like syntax:
 
 ```python
@@ -88,7 +88,7 @@ once the exception `DivideByZeroException.throw` is raised, the control flow
 will be transferred to the `except DivideByZeroException.throw(dividend)` 
 branch.
 
-However, the unsual part is in the `resume k` part of the `except` clause. This
+However, the unusual part is in the `resume k` part of the `except` clause. This
 is a hypothetical syntax illustrating the effect handler mechanism.
 
 The `resume k` binds the `k` variable to a **first-class continuation** that 
@@ -136,7 +136,7 @@ So combining all the pieces together, the program would simply print out
 `DivideByZeroException.throw` effect, which will be handled in the `main` 
 function and resume the computation with the `dividend` value of `10`.
 
-Cool! let's consider an another example:
+Cool! Let's consider another example:
 
 ```python
 def main():
@@ -162,7 +162,7 @@ exceptions, async/await, and generators is true.
 We can play with the `k` continuation differently to implement different 
 control flow mechanisms such as:
 
-- If we ignore the conrinuation `k`, then the effect handler behaves like 
+- If we ignore the continuation `k`, then the effect handler behaves like 
   exception handling. It's sometimes called "zero-resumption".
 - If we call the continuation `k` exactly once at the tail position (the 
   `k(...)` expression is called last in the `except` clause), then the
@@ -173,7 +173,7 @@ control flow mechanisms such as:
   task scheduling.
 - If we call the continuation `k` multiple times with different arguments, then
   it starts to behave like search tree traversal, some kind of backtracking 
-  algorithmor "non-deterministic".
+  algorithm or "non-deterministic".
 
 ## Ray's Effect Handlers and Compilation Model
 
@@ -181,10 +181,10 @@ So far, we have seen how effect handlers can be used to implement exceptions.
 In this section, we'll explore the actual semantics of the effect handler 
 feature of Ray and how it is implemented under the hood through examples.
 
-Let's explore the actual effect handler feature of Ray through an another 
+Let's explore the actual effect handler feature of Ray through another 
 example of implementing a generator function that generates fibonacci numbers.
 
-> Note that the semantic of effect handlers in Ray is slightly different from the
+> Note that the semantics of effect handlers in Ray is slightly different from the
 divide-by-zero exception example we discussed earlier. The earlier example 
 introduces the concept of effect handlers in a simplified manner, and it's more
 like how Flix's effect handlers semantics work.
@@ -198,7 +198,7 @@ eff Yield[a]:
 
 The `Yield` is defined as an **effect** that has a single **operation** called 
 `yield`. This looks similar to defining a trait or an interface in other 
-programming languages!.
+programming languages!
 
 Next, let's define a function that uses the `Yield` effect to generate fibonacci 
 numbers as follows:
@@ -232,7 +232,7 @@ That annotation is required because the `Yield.yield(a)` operation performed
 inside the function body emits the `Yield[int32]` effect, and the function
 signature must reflect that.  
 
-To give a complete example, we can define a function that print the first 10
+To give a complete example, we can define a function that prints the first 10
 fibonacci numbers:
 
 ```ray
@@ -257,22 +257,22 @@ First, the expression `coro generateFibonacci()` reifies the function into a
 function, but instead returns a coroutine that can be resumed later. 
 
 So what is a coroutine? A coroutine is a special kind of function that can be
-paused and resumed later. So,variable `gen` is a coroutine of the 
+paused and resumed later. So, variable `gen` is a coroutine of the 
 `generateFibonacci` function. 
 
-Coroutine in some sense is a callback object that you can call to it multiple 
+Coroutine in some sense is a callback object that you can call multiple 
 times, but each time you call it, it starts from where it left off from the 
 last time it was called. This is different from a normal function callback like 
 closure or lambda, which always starts from the beginning of the function body 
 every time it is called.
 
-So in this case, every time we call to the coroutine of `generateFibonacci`, it
+So in this case, every time we call the coroutine of `generateFibonacci`, it
 will run until it hits the `Yield.yield(a)` operation, then pause and return the
 yielded value back to the caller (the fibonacci number). The next time we call 
-to the coroutine, it will resume from the last `Yield.yield(a)` operation and 
+the coroutine, it will resume from the last `Yield.yield(a)` operation and 
 continue to run until it hits the next `Yield.yield(a)` operation, and so on. 
 
-If we recall to the previous divide-by-zero exception example, the coroutine is 
+If we recall the previous divide-by-zero exception example, the coroutine is 
 the mechanism that allows us to implement the first-class continuation!
 
 Sometimes, we refer to the coroutine as a **state machine** because it indeed 
@@ -293,13 +293,13 @@ of the state of the coroutine at each call to the coroutine:
 | 5 | a=2, b=3 | a=3, b=5 | Yield.yield(3) |
 | ... | ... | ... | ... |
 
-Each time we call to the coroutine, it reads off the current state, executes the 
+Each time we call the coroutine, it reads off the current state, executes the 
 function body, updates its internal state, and returns the yielded value back 
 to the caller. In the case of the `generateFibonacci` function, we can 
 call the coroutine indefinitely to generate the next fibonacci number. Normally,
 in other cases, the coroutine will terminate/end when it reaches the end of the function body or when it hits a `return` statement.
 
-Once, we have a good understanding of what a coroutine is, we can now look at
+Once we have a good understanding of what a coroutine is, we can now look at
 the `handle` expression inside the while loop.
 
 ```ray
@@ -345,7 +345,7 @@ that we discussed.
 In this example, we assign `k` to `gen` variable so that we can resume the 
 coroutine in the next iteration of the while loop.
 
-On the other hand, the `case return: ...` branch:
+On the other hand, the `case return x: ...` branch:
 
 ```ray
 case return x:
@@ -359,7 +359,7 @@ the while loop since it doesn't have any more number to yield. That said, the
 `generateFibonacci` function is an infinite loop, so this branch will never be
 executed in this example.
 
-In summary, the above example will print out first 10 fibonacci numbers. It
+In summary, the above example will print out the first 10 fibonacci numbers. It
 works by repeatedly resuming the coroutine and handling the `Yield.yield`
 operation at each iteration. The `k` continuation allows us to resume the 
 coroutine function from where it left off, enabling us to generate the next 
@@ -372,8 +372,8 @@ divide-by-zero exception example we discussed earlier. Both examples involve
 suspending computation and resuming it later. 
 
 So, Ray's first-class continuation is implemented through the coroutine 
-mechanism, therefore, it losts the ability to **resume the computation multiple 
-times**. This might find contradictory to the earlier explanation that coroutine
+mechanism, therefore, it loses the ability to **resume the computation multiple 
+times**. This might seem contradictory to the earlier explanation that coroutine
 can be resumed multiple times. 
 
 However, the **multiple-resumption** in this context refers to the ability to 
@@ -387,7 +387,7 @@ Technically, you can **sort-of** emulate multiple-resumption using coroutines
 by **cloning** the coroutine state machine before resuming it. This way, you can
 always have a copy of the original state machine to resume from the same point 
 multiple times. However, cloning the entire state machine of a coroutine can
-be non-trivial and its semantic can be tricky, especially in a language that
+be non-trivial and its semantics can be tricky, especially in a language that
 has mutable variables and linear resources.
 
 We call this **one-shot continuation** because the continuation can only be 
@@ -399,7 +399,7 @@ This reflects in the earlier example where the `k` (representing the next-state
 of the coroutine) continuation is assigned back to the `gen` variable so that
 it can be used in the next iteration of the while loop.
 
-In other implementation of effect handlers like Flix, Koka, and Effekt, they
+In other implementations of effect handlers like Flix, Koka, and Effekt, they
 support multiple-resumption. But I'm not sure how they implement it under the 
 hood.
 
@@ -425,7 +425,7 @@ coroutine (the mechanism behind the async/await feature of Rust) already gives
 us a good starting point that we can borrow from to implement effect handlers 
 and continuations in Ray.
 
-So, let's explore how the compilation work through the lens of existing building
+So, let's explore how the compilation works through the lens of existing building
 blocks used to implement stackless coroutine in Rust. We'll give examples of
 how our earlier `generateFibonacci` examples can be lowered into an efficient
 Rust code, primarily using `Coroutine` trait and `enum` state machine.
@@ -496,11 +496,11 @@ that point.
 - Resuming the continuation `k` is simply calling the 
 `GenerateFibonacci::resume`, executing the rest of the computation according
 to the current variant of the `GenerateFibonacci` state machine.
-- `raise DivideByZeroException.throw(dividend)` is analogous to returning 
+- `raise DivideByZeroException.throw(dividend)` is analogous to returning the
 `CoroutineState::Yielded` variant, which suspends the computation and returns 
 the yielded value back to the caller.
 
-Then, the  `main` function of the previous example could be lowered into a 
+Then, the `main` function of the previous example could be lowered into a 
 function that drives the `GenerateFibonacci` coroutine like this:
 
 ```rust
@@ -524,15 +524,15 @@ very similar or essentially the same to the `handle` expression in the original
 Ray's `main` function. 
 
 One minor question that comes to mind is "where's the `resume k` part of the 
-`handle` expression and `gen` variable from `coro` expression fits here, 
-what're their equivalents in the lowered Rust code?". The answer is that the 
-original `gen` variable and `k` continuation are simply pointer to the same `GenerateFibonacci`state machine, which is represented by `gen_coro` variable 
+`handle` expression and `gen` variable from `coro` expression fit here, 
+what are their equivalents in the lowered Rust code?". The answer is that the 
+original `gen` variable and `k` continuation are simply pointers to the same `GenerateFibonacci` state machine, which is represented by `gen_coro` variable 
 in the lowered Rust code.
 
 So, the `resume k` continuation in the original Ray code isn't a separate 
 function or anything special, but simply a pointer to the `GenerateFibonacci`.
-An another follow-up question might be "why do we even bother having a separate
-`k` variable instead of just one `gen` variable? if both point to the same state machine, why not just use one?". The answer is will be discussed in the next 
+Another follow-up question might be "why do we even bother having a separate
+`k` variable instead of just one `gen` variable? If both point to the same state machine, why not just use one?". The answer will be discussed in the next 
 section about **Continuation Type-State Wrapper**.
 
 And voila! That's it. This is roughly how Ray compiles the effectful code and the 
@@ -596,7 +596,7 @@ to match!
 
 If the coroutine yields a `YieldAndCalculator_Yield::Calculator_add(x, y)` 
 value, which asks for the result of adding two numbers, the caller must resume 
-with  `YieldAndCalculator_R::Calculator_add(result)` value answering it. 
+with `YieldAndCalculator_R::Calculator_add(result)` value answering it. 
 
 For this reason, the Ray compiler will enforce this type safety and ensure that 
 the types match up correctly. 
@@ -609,7 +609,7 @@ However, the expression will return a value of type
 `Continuation[r, &mut <internal coroutine type>]` instead, which acts as a 
 type-state wrapper around the internal coroutine type. 
 
-In the  `Continuation[r, ...]` type, the `r` type represents the next argument 
+In the `Continuation[r, ...]` type, the `r` type represents the next argument 
 type that the coroutine expects to be resumed with. This is how the compiler
 ensures that the caller always resumes the coroutine with the correct argument
 type. 
@@ -675,8 +675,8 @@ Stackless coroutine serves as a good starting point for implementing effect
 handlers, but it has some rough edges that need to be addressed. This limitation
 is also present in Rust's async/await implementation. 
 
-The noticable limitation is that the stackless coroutine doesn't interact well
-with recursive functions. This is generally because how the coroutine state
+The noticeable limitation is that the stackless coroutine doesn't interact well
+with recursive functions. This is generally because of how the coroutine state
 machine is composed. For instance, consider the following example:
 
 ```ray
@@ -753,7 +753,7 @@ via `Box::pin`. However, in Ray, the compiler will automatically box the
 recursive state machine for you. 
 
 This is a debatable design choice about explicitness vs ergonomics. Sometimes,
-silently allocating memory everytime a recursive function is called might be
+silently allocating memory every time a recursive function is called might be
 surprising and can lead to unpredictable performance issues. In the future, 
 we might have a dedicated syntax for explicitly boxing the recursive state
 machine. However, at the same time, we might be able to take advantage of the 
@@ -768,7 +768,7 @@ in the context of system-level programming languages. One solution is to
 **pin** the state machine in memory, which prevents it from invalidating its
 own internal references.
 
-Rust does this via combination of `Pin` pointer and `Unpin` trait. However,
+Rust does this via a combination of `Pin` pointer and `Unpin` trait. However,
 the pinning mechanism of Ray is not yet decided. Currently, every `coro` 
 expression pins the coroutine state machine immediately and the concrete 
 coroutine is hidden away, similarly to how Rust `std::pin::pin!` macro works. 
@@ -781,7 +781,7 @@ we'll address in the future once we have a better pinning mechanism in place.
 
 ## Type and Effect System
 
-So far, we have discussed about the semantics and compilation model of effect
+So far, we have discussed the semantics and compilation model of effect
 handlers. In a language with a static type system, it's natural to extend the
 type system to track side effects as well. This is where the **effect system**
 comes into play.
@@ -790,9 +790,9 @@ Generally, the effect system tracks which set of effects a function can perform
 and ensures that all effects are handled properly. 
 
 In the earlier example of `generateFibonacci` function, the effect system 
-ensures that the we specify the `\ {Yield[int32]}` annotation in the function 
+ensures that we specify the `\ {Yield[int32]}` annotation in the function 
 signature, which indicates that the function can perform the `Yield[int32]` 
-effect. For instace, if we try to perform an effect that is not specified in the 
+effect. For instance, if we try to perform an effect that is not specified in the 
 function signature, the compiler will raise an error:
 
 ```ray
@@ -810,7 +810,7 @@ pub def generateFibonacci() -> () \ {Yield[int32]}:
     while true:
         Yield.yield(a)
 
-        # This is not allowed since the function only allows `Yield[int32]
+        # This is not allowed since the function only allows `Yield[int32]`
         Log.log(a)
 
         let temp = a
@@ -818,8 +818,8 @@ pub def generateFibonacci() -> () \ {Yield[int32]}:
         b = temp + b
 ```
 
-However, effect system also covers more that just tracking which effects a 
-function can perform. It also covers the composibility and interoperability of 
+However, effect system also covers more than just tracking which effects a 
+function can perform. It also covers the composability and interoperability of 
 functions with different effects, which is known through the notorious 
 **function coloring problem**.
 
@@ -941,8 +941,8 @@ explored the semantics of effect handlers, how they are compiled into a
 coroutine state machine, and how it works together with effect system to 
 track and compose effects.
 
-Although, we didn't cover the effect-system in depth, as this could be a topic 
-for another write-up, but we have seen how the effect system can be used to 
+Although we didn't cover the effect-system in depth, as this could be a topic 
+for another write-up, we have seen how the effect system can be used to 
 solve the function coloring problem and how it can be used to track and 
 compose effects in a type-safe manner.
 
